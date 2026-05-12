@@ -1,0 +1,96 @@
+# =====================================================================
+# Secrets & environment files
+# .env files are LOCAL ONLY and must never reach GitHub.
+# .env.example IS tracked so the repo always documents what is required.
+# Order matters: deny first, then re-allow the example files explicitly.
+# =====================================================================
+.env
+.env.*
+*.env
+*.env.local
+*.env.development
+*.env.production
+backend/.env
+frontend/.env
+
+# Re-allow example templates (these must be tracked)
+!.env.example
+!**/.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# =====================================================================
+# Python
+# =====================================================================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# =====================================================================
+# Node / Vite
+# =====================================================================
+node_modules/
+frontend/dist/
+frontend/.vite/
+.vite/
+*.tsbuildinfo
+
+# =====================================================================
+# Editor / IDE
+# =====================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.cursorrules
+
+# =====================================================================
+# Logs & runtime data
+# =====================================================================
+*.log
+activity.log
+backend/data/
+backend/*.log
+frontend/*.log
+logs/
+
+# =====================================================================
+# Temporary audio files
+# =====================================================================
+*.wav
+*.mp3
+*.webm
+*.ogg
+*.m4a
+*.flac
+/tmp/
+tmp/
+backend/tmp/
+
+# =====================================================================
+# Pytest scratch dirs created by this project's test harness
+# =====================================================================
+.pytest_run_*/
+.pytest_project_*/
+.pytest_full_*/
+.pytest_tmp/
+
+# =====================================================================
+# OS junk
+# =====================================================================
+.DS_Store
+Thumbs.db
+desktop.ini

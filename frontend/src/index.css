@@ -1,0 +1,135 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #07111a;
+  --bg-secondary: #0b1722;
+  --bg-tertiary: #111f2d;
+  --bg-card: rgba(18, 30, 43, 0.56);
+  --bg-card-strong: rgba(12, 23, 34, 0.8);
+  --bg-overlay: rgba(7, 13, 20, 0.46);
+  --border: rgba(255, 255, 255, 0.11);
+  --border-strong: rgba(255, 255, 255, 0.2);
+  --text-primary: #f6fbff;
+  --text-secondary: #cad6e2;
+  --text-muted: #8294a6;
+  --accent: #8cead6;
+  --accent-hover: #b9fff0;
+  --accent-secondary: #89bcff;
+  --success: #77e3a6;
+  --error: #ff8e9c;
+  --warning: #ffc87a;
+  --shadow-soft: 0 18px 48px rgba(2, 7, 12, 0.22);
+  --shadow-strong: 0 28px 110px rgba(1, 5, 10, 0.34);
+  --font-body: "Aptos", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-display: "Aptos Display", "Segoe UI Variable Display", "Segoe UI", "Helvetica Neue", sans-serif;
+  --radius: 30px;
+  --radius-sm: 16px;
+}
+
+html, body, #root {
+  min-height: 100%;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 12% 14%, rgba(122, 230, 214, 0.18), transparent 24%),
+    radial-gradient(circle at 84% 10%, rgba(133, 187, 255, 0.18), transparent 28%),
+    radial-gradient(circle at 70% 72%, rgba(255, 170, 132, 0.1), transparent 28%),
+    linear-gradient(145deg, #07111a 0%, #0b1620 38%, #0c1926 100%);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.045), transparent 22%, transparent 72%, rgba(255, 255, 255, 0.025)),
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.02), transparent 58%);
+  mix-blend-mode: screen;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  outline: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(140, 234, 214, 0.72);
+  outline-offset: 2px;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: rgba(140, 234, 214, 0.26);
+  color: var(--text-primary);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(173, 207, 233, 0.22) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(173, 207, 233, 0.22);
+  border-radius: 999px;
+}
+
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

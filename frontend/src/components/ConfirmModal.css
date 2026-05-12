@@ -1,0 +1,124 @@
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(4, 8, 12, 0.56);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  animation: backdrop-in 0.18s ease;
+}
+
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.modal {
+  width: min(100%, 430px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 30px 28px 24px;
+  border-radius: 28px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02)),
+    rgba(12, 21, 31, 0.74);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow: 0 30px 120px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(30px) saturate(170%);
+  -webkit-backdrop-filter: blur(30px) saturate(170%);
+  animation: modal-in 0.22s ease;
+}
+
+@keyframes modal-in {
+  from {
+    transform: translateY(12px) scale(0.97);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.modal__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  background: rgba(255, 200, 122, 0.12);
+  border: 1px solid rgba(255, 200, 122, 0.18);
+  color: var(--warning);
+  font-size: 1.6rem;
+}
+
+.modal__title {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  letter-spacing: -0.04em;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.modal__desc {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(7, 14, 21, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 0.93rem;
+  line-height: 1.6;
+  text-align: center;
+  word-break: break-word;
+}
+
+.modal__actions {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.modal__btn {
+  flex: 1 1 0;
+  min-height: 46px;
+  border-radius: 16px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.modal__btn:hover {
+  transform: translateY(-1px);
+}
+
+.modal__btn--cancel {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+}
+
+.modal__btn--cancel:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text-primary);
+}
+
+.modal__btn--confirm {
+  background: linear-gradient(135deg, rgba(140, 234, 214, 0.92), rgba(137, 188, 255, 0.88));
+  border: 1px solid rgba(140, 234, 214, 0.16);
+  color: #07111a;
+}

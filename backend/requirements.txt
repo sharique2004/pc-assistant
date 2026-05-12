@@ -1,0 +1,42 @@
+# PC Assistant — Python backend dependencies
+# Python 3.11+
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# NOTE: openai-whisper requires ffmpeg on PATH.
+#   Windows: winget install --id Gyan.FFmpeg  OR  choco install ffmpeg
+#
+# NOTE: openai-whisper is not on PyPI by that name; install with:
+#   pip install openai-whisper
+#   (the package name on PyPI is "openai-whisper", not "whisper")
+
+# ── Web framework ──────────────────────────────────────────────────────────
+flask>=3.0.3
+flask-cors>=4.0.1
+
+# ── Environment / configuration ────────────────────────────────────────────
+python-dotenv>=1.0.1
+
+# ── HTTP client — used by app.py (Ollama health check) and voice_intent.py /
+#    executor.py (Ollama inference calls).  No cloud SDK needed. ─────────────
+requests>=2.32.0
+
+# ── Local speech-to-text (voice_intent.py) ────────────────────────────────
+# Whisper runs fully on-device; no OpenAI API key required.
+openai-whisper
+faster-whisper>=1.2.1
+numpy>=1.26.4
+
+# ── Audio capture (voice_intent.py) ───────────────────────────────────────
+sounddevice>=0.4.7
+scipy>=1.13.0
+
+# ── System state (pc_state.py) ────────────────────────────────────────────
+psutil>=5.9.8
+pygetwindow>=0.0.9
+pywinauto>=0.6.8
+
+# ── Testing ────────────────────────────────────────────────────────────────
+pytest>=8.2.0
+pytest-mock>=3.14.0
