@@ -1804,6 +1804,156 @@ def create_file(file_name: str, file_type: str, content: str = "") -> dict:
         return {"success": False, "message": str(e), "data": {}, "requires_confirmation": False}
 
 
+def _run_claude_interactive(task_text: str, target: Path, extra_context: str) -> dict:
+    """
+    Launch Claude Code in a NEW visible terminal window with the prompt
+    pre-loaded.  The Flask backend returns immediately; the user watches
+    Claude work in Windows Terminal and can intervene any time.
+
+    No stdout capture, no completion callback - this is fire-and-watch.
+
+    Also opens VS Code at the target dir alongside the terminal so files
+    appear live as Claude writes them.
+    """
+    try:
+        claude_executable = _resolve_claude_executable()
+    except FileNotFoundError as exc:
+        return {
+            "success": False,
+            "message": str(exc),
+            "data": {"project_dir": str(target), "mode": "interactive"},
+            "requires_confirmation": False,
+        }
+
+    prompt = _build_claude_prompt(task_text, target, extra_context)
+    model = os.getenv("CLAUDE_TASK_MODEL", "").strip()
+
+    command = [
+        claude_executable,
+        "--permission-mode", "acceptEdits",
+    ]
+    if model:
+        command.extend(["--model", model])
+    # `--` separator: keep our prompt from being eaten as another --model value
+    # if a future flag accepts variadic args (this bit us with --add-dir).
+    command.append("--")
+    command.append(prompt)
+
+    # Open VS Code alongside the terminal so the project files appear as
+    # Claude writes them.  Fire-and-forget; if VS Code isn't configured we
+    # silently skip it - the terminal is the primary surface.
+    try:
+        vscode_path = os.getenv("VSCODE_PATH", "")
+        if vscode_path and os.path.exists(vscode_path):
+            subprocess.Popen([vscode_path, str(target)], shell=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # CREATE_NEW_CONSOLE spawns the child with its own console window.
+    # On Windows 11 with Windows Terminal as the default conhost, this opens
+    # in WT (matching the screenshot the user shared); on older Windows it
+    # falls back to a plain conhost window.
+    create_new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+
+    try:
+        subprocess.Popen(
+            command,
+            cwd=str(target),
+            creationflags=create_new_console,
+            close_fds=False,
+        )
+    except FileNotFoundError as exc:
+        return {
+            "success": False,
+            "message": f"Could not launch Claude Code: {exc}",
+            "data": {"project_dir": str(target), "mode": "interactive"},
+            "requires_confirmation": False,
+        }
+
+    _log_activity(f"Claude interactive launched target={target}")
+    return {
+        "success": True,
+        "message": (
+            f"Opened Claude Code in a new terminal window inside {target.name}. "
+            "Watch it build your app there - you can intervene any time."
+        ),
+        "data": {
+            "task": task_text,
+            "project_dir": str(target),
+            "tool": "claude_code",
+            "mode": "interactive",
+        },
+        "requires_confirmation": False,
+    }
+
+
+def _run_claude_headless(task_text: str, target: Path, extra_context: str) -> dict:
+    """
+    Legacy headless path: run claude --print, capture stdout, open VS Code on
+    success.  Selectable via CLAUDE_TASK_MODE=headless when the caller wants
+    a captured summary instead of an interactive session.
+    """
+    claude_executable = _resolve_claude_executable()
+    prompt = _build_claude_prompt(task_text, target, extra_context)
+    timeout_s = max(60.0, _get_env_float("CLAUDE_TASK_TIMEOUT_S", 600.0))
+    model = os.getenv("CLAUDE_TASK_MODEL", "").strip()
+
+    command = [
+        claude_executable,
+        "--print",
+        "--permission-mode", "acceptEdits",
+        "--add-dir", str(target),
+    ]
+    if model:
+        command.extend(["--model", model])
+    command.append("--")
+    command.append(prompt)
+
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        cwd=str(target),
+    )
+
+    stdout_tail = _tail_text(completed.stdout)
+    stderr_tail = _tail_text(completed.stderr)
+    success = completed.returncode == 0
+    last_message = stdout_tail.strip() if success else ""
+
+    if success:
+        message = last_message or f"Claude finished the task in {target}."
+        try:
+            vscode_path = os.getenv("VSCODE_PATH", "")
+            if vscode_path and os.path.exists(vscode_path):
+                subprocess.Popen([vscode_path, str(target)], shell=False)
+            else:
+                os.startfile(str(target))
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        detail = stderr_tail or stdout_tail or f"Claude exited with code {completed.returncode}."
+        message = f"Claude could not finish that task. {detail}"
+
+    _log_activity(f"Claude task returncode={completed.returncode} target={target}")
+    return {
+        "success": success,
+        "message": message,
+        "data": {
+            "task": task_text,
+            "project_dir": str(target),
+            "returncode": completed.returncode,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+            "last_message": last_message,
+            "tool": "claude_code",
+            "mode": "headless",
+        },
+        "requires_confirmation": False,
+    }
+
+
 def run_claude_task(task: str, project_name: str = "", context: str = "") -> dict:
     """
     Hand a coding task off to Claude Code in non-interactive (--print) mode.
@@ -1834,69 +1984,10 @@ def run_claude_task(task: str, project_name: str = "", context: str = "") -> dic
             target = Path(target_path)
             target.mkdir(parents=True, exist_ok=True)
 
-            claude_executable = _resolve_claude_executable()
-            prompt = _build_claude_prompt(task_text, target, extra_context)
-            timeout_s = max(60.0, _get_env_float("CLAUDE_TASK_TIMEOUT_S", 600.0))
-            model = os.getenv("CLAUDE_TASK_MODEL", "").strip()
-
-            command = [
-                claude_executable,
-                "--print",
-                "--permission-mode", "acceptEdits",
-                "--add-dir", str(target),
-            ]
-            if model:
-                command.extend(["--model", model])
-            # The CLI parser will otherwise consume the prompt as a second
-            # value for --add-dir (silently dropping it) and refuse with
-            # "Input must be provided either through stdin or as a prompt
-            # argument when using --print".  The `--` separator forces the
-            # prompt to be parsed as a positional.
-            command.append("--")
-            command.append(prompt)
-
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                cwd=str(target),
-            )
-
-            stdout_tail = _tail_text(completed.stdout)
-            stderr_tail = _tail_text(completed.stderr)
-            success = completed.returncode == 0
-            last_message = stdout_tail.strip() if success else ""
-
-            if success:
-                message = last_message or f"Claude finished the task in {target}."
-                try:
-                    vscode_path = os.getenv("VSCODE_PATH", "")
-                    if vscode_path and os.path.exists(vscode_path):
-                        subprocess.Popen([vscode_path, str(target)], shell=False)
-                    else:
-                        os.startfile(str(target))
-                except Exception:
-                    pass
-            else:
-                detail = stderr_tail or stdout_tail or f"Claude exited with code {completed.returncode}."
-                message = f"Claude could not finish that task. {detail}"
-
-            _log_activity(f"Claude task returncode={completed.returncode} target={target}")
-            return {
-                "success": success,
-                "message": message,
-                "data": {
-                    "task": task_text,
-                    "project_dir": str(target),
-                    "returncode": completed.returncode,
-                    "stdout_tail": stdout_tail,
-                    "stderr_tail": stderr_tail,
-                    "last_message": last_message,
-                    "tool": "claude_code",
-                },
-                "requires_confirmation": False,
-            }
+            mode = os.getenv("CLAUDE_TASK_MODE", "interactive").strip().lower()
+            if mode == "interactive":
+                return _run_claude_interactive(task_text, target, extra_context)
+            return _run_claude_headless(task_text, target, extra_context)
 
         return _queue_operation(
             fn=do_run_claude,

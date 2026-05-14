@@ -275,7 +275,7 @@ export default function App() {
   }, [pendingConfirm, speakText])
 
   const handleVoiceTest = useCallback(() => {
-    void speakText('Voice replies are ready. I can answer your commands out loud while everything stays local.')
+    void speakText('Bibi voice replies are ready. I can answer your commands out loud while everything stays local.')
   }, [speakText])
 
   return (
@@ -284,8 +284,8 @@ export default function App() {
         <div className="app-brand">
           <span className="app-logo" aria-hidden="true" />
           <div className="app-brand__copy">
-            <h1 className="app-title">PC Assistant</h1>
-            <p className="app-tagline">A calm command space for your computer.</p>
+            <h1 className="app-title">Bibi</h1>
+            <p className="app-tagline">A calm command space for your PC.</p>
           </div>
         </div>
 
@@ -310,7 +310,7 @@ export default function App() {
       </header>
 
       <main className="app-main">
-        <section className="assistant-console" aria-label="Assistant command console">
+        <section className="assistant-console" aria-label="Bibi command console">
           <div className="assistant-console__header">
             <div>
               <span className="assistant-console__eyebrow">Now</span>
@@ -414,7 +414,7 @@ function buildHeroState({ latestCommand, pendingConfirm, isSpeaking, voiceEnable
       tone: 'active',
       status: 'Speaking back',
       summary: 'Reading the latest result.',
-      detail: latestCommand?.result?.message || 'Your assistant replies are active.',
+      detail: latestCommand?.result?.message || 'Bibi voice replies are active.',
     }
   }
 
@@ -448,7 +448,7 @@ function buildHeroState({ latestCommand, pendingConfirm, isSpeaking, voiceEnable
   return {
     tone: 'ready',
     status: isContinuous ? 'Continuous mode active' : 'Standing by',
-    summary: 'Ready for a command.',
+    summary: 'Bibi is ready for a command.',
     detail: 'Use the mic or type below.',
   }
 }

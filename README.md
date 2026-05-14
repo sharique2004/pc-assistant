@@ -188,6 +188,19 @@ The `create_app` flow chooses between three back-ends based on the request:
 Both CLI paths return `requires_confirmation: true` so the React UI asks for
 your approval before any code is generated.
 
+### Claude Code execution mode
+
+The `CLAUDE_TASK_MODE` env var in `backend/.env` picks how Claude runs:
+
+- **`interactive` (default)** — confirms, then spawns Claude Code in a NEW
+  Windows Terminal window with your prompt pre-loaded. You watch it work
+  and can interrupt or steer the session. VS Code opens alongside so files
+  appear live as Claude writes them. Flask returns immediately; there's no
+  captured summary message.
+- **`headless`** — runs `claude --print` in the background, captures stdout
+  into the `/confirm` response, then opens VS Code on success. Use this when
+  you want a batch run (CI, automated tests).
+
 ---
 
 ## REST API

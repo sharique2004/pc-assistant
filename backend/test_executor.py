@@ -668,19 +668,18 @@ def test_run_codex_task_queues_and_executes(tmp_path):
     mock_startfile.assert_called_once()
 
 
-def test_run_claude_task_passes_prompt_positionally(tmp_path):
-    # Claude Code on Windows refuses --print invocations when the prompt is
-    # piped through stdin via a .cmd shim ("Input must be provided either
-    # through stdin or as a prompt argument when using --print").  The fix
-    # is to append the built prompt as the final positional argument; this
-    # test pins that calling convention.
+def test_run_claude_task_headless_passes_prompt_positionally(tmp_path):
+    # Headless path (CLAUDE_TASK_MODE=headless): runs `claude --print`,
+    # captures stdout into the response, and opens the project on success.
+    # The "--" separator before the prompt is required - without it Claude's
+    # argv parser eats the prompt as a second --add-dir value.
     executor._WORKSPACE_DIR = str(tmp_path / "workspace")
     completed = MagicMock()
     completed.returncode = 0
     completed.stdout = "claude output"
     completed.stderr = ""
 
-    with patch.dict(os.environ, {"VSCODE_PATH": ""}):
+    with patch.dict(os.environ, {"VSCODE_PATH": "", "CLAUDE_TASK_MODE": "headless"}):
         with patch("executor._resolve_claude_executable", return_value="claude.exe"):
             with patch("executor.subprocess.run", return_value=completed) as mock_run:
                 with patch("executor.os.startfile") as mock_startfile:
@@ -690,15 +689,47 @@ def test_run_claude_task_passes_prompt_positionally(tmp_path):
 
     assert confirm_result["success"] is True
     assert "workout-tracker" in confirm_result["data"]["project_dir"]
+    assert confirm_result["data"]["mode"] == "headless"
     command = mock_run.call_args.args[0]
     kwargs = mock_run.call_args.kwargs
     assert command[0] == "claude.exe"
     assert "--print" in command
-    # Prompt is the last positional argument and contains the task verbatim.
     assert "build a workout tracker" in command[-1]
-    # The `--` separator must precede the prompt so that Claude's argv parser
-    # does not consume the prompt as a second value to --add-dir.
     assert command[-2] == "--"
-    # We deliberately stopped piping the prompt through stdin.
     assert "input" not in kwargs
     mock_startfile.assert_called_once()
+
+
+def test_run_claude_task_interactive_spawns_new_terminal(tmp_path):
+    # Interactive path (CLAUDE_TASK_MODE=interactive, the default):
+    #   - drops --print so claude opens its interactive UI
+    #   - spawns via subprocess.Popen with CREATE_NEW_CONSOLE so the user
+    #     sees a real terminal window
+    #   - returns immediately with success=True (no captured stdout)
+    executor._WORKSPACE_DIR = str(tmp_path / "workspace")
+
+    with patch.dict(os.environ, {"VSCODE_PATH": "", "CLAUDE_TASK_MODE": "interactive"}):
+        with patch("executor._resolve_claude_executable", return_value="claude.exe"):
+            with patch("executor.subprocess.Popen") as mock_popen:
+                result = executor.run_claude_task("build a workout tracker", project_name="workout tracker")
+                assert result["data"]["requires_confirmation"] is True
+                confirm_result = executor.confirm_operation(result["data"]["operation_id"])
+
+    assert confirm_result["success"] is True
+    assert confirm_result["data"]["mode"] == "interactive"
+    assert "workout-tracker" in confirm_result["data"]["project_dir"]
+    # The Claude Popen should be the most recent call. VS Code Popen would be
+    # an earlier call if VSCODE_PATH was set (it isn't in this test).
+    claude_call = mock_popen.call_args
+    command = claude_call.args[0]
+    kwargs = claude_call.kwargs
+    assert command[0] == "claude.exe"
+    # Interactive: --print is NOT present.
+    assert "--print" not in command
+    assert "--permission-mode" in command
+    assert command[-2] == "--"
+    assert "build a workout tracker" in command[-1]
+    # CREATE_NEW_CONSOLE = 0x10 ensures a visible terminal window.
+    assert kwargs.get("creationflags", 0) & 0x10 == 0x10
+    # cwd points at the generated project so Claude operates in-place.
+    assert "workout-tracker" in str(kwargs.get("cwd", ""))
