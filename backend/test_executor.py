@@ -38,9 +38,12 @@ def test_resolve_app_path():
 
 
 def test_resolve_app_path_alias_chat_gpt():
-    with patch("executor.os.path.exists", side_effect=lambda path: str(path).lower().endswith("chatgpt.exe")):
-        path = executor.resolve_app_path("chat gpt")
-        assert "chatgpt.exe" in path.lower()
+    # Force the legacy alias path: stub out world_model so we exercise the
+    # _resolve_alias_path fallback that the static _APP_ALIAS_PATHS table feeds.
+    with patch("executor.world_model.resolve_app", return_value=None):
+        with patch("executor.os.path.exists", side_effect=lambda path: str(path).lower().endswith("chatgpt.exe")):
+            path = executor.resolve_app_path("chat gpt")
+            assert "chatgpt.exe" in path.lower()
 
 
 def test_resolve_app_path_fuzzy_match():
@@ -105,9 +108,12 @@ def test_open_app_strips_pc_filler(mock_startfile):
         "path": "C:/Users/Sharique Khatri/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/Canvas.lnk",
         "source": "alias",
     }
+    # Stub suggest_apps so the real SQLite (which may contain Canvas-like shell
+    # AUMID entries) does not override the mocked alias record.
     with patch("executor.world_model.resolve_app", return_value=app_record):
-        with patch("executor._verify_app_launch", return_value=True):
-            result = executor.open_app("canvas on my pc")
+        with patch("executor.world_model.suggest_apps", return_value=[]):
+            with patch("executor._verify_app_launch", return_value=True):
+                result = executor.open_app("canvas on my pc")
 
     assert result["success"] is True
     assert result["data"]["resolved_app_name"] == "Canvas"
@@ -486,9 +492,10 @@ def test_general_shortcut_codex_task():
     mock_codex_task.assert_called_once_with("build a notes app")
 
 
-def test_create_app_uses_codex_for_complex_requests():
-    with patch("executor.run_codex_task") as mock_codex_task:
-        mock_codex_task.return_value = {
+def test_create_app_routes_react_dashboard_to_claude():
+    # React / dashboard / frontend markers trip the Claude routing path.
+    with patch("executor.run_claude_task") as mock_claude_task:
+        mock_claude_task.return_value = {
             "success": False,
             "message": "This action requires your confirmation.",
             "data": {"requires_confirmation": True, "operation_id": "op"},
@@ -497,8 +504,28 @@ def test_create_app_uses_codex_for_complex_requests():
         result = executor.create_app("a React dashboard app with authentication and a database")
 
     assert result["data"]["requires_confirmation"] is True
+    mock_claude_task.assert_called_once()
+    assert "React dashboard" in mock_claude_task.call_args.args[0]
+
+
+def test_create_app_uses_codex_for_complex_script_requests():
+    # Long script-style request with no UI markers should land on Codex.
+    description = (
+        "a command line program that scans a folder full of log files, parses out "
+        "timestamps and error codes, and produces a CSV summary grouped by day"
+    )
+    with patch("executor.run_codex_task") as mock_codex_task:
+        mock_codex_task.return_value = {
+            "success": False,
+            "message": "This action requires your confirmation.",
+            "data": {"requires_confirmation": True, "operation_id": "op"},
+            "requires_confirmation": True,
+        }
+        result = executor.create_app(description)
+
+    assert result["data"]["requires_confirmation"] is True
     mock_codex_task.assert_called_once()
-    assert "React dashboard" in mock_codex_task.call_args.args[0]
+    assert "log files" in mock_codex_task.call_args.args[0]
 
 
 def test_run_codex_task_queues_and_executes(tmp_path):

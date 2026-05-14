@@ -1,17 +1,13 @@
 .voice-panel {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   min-width: 0;
-  padding: 20px;
-  border-radius: 28px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.018)),
-    rgba(11, 20, 29, 0.56);
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
   box-shadow: var(--shadow-soft);
-  backdrop-filter: blur(24px) saturate(170%);
-  -webkit-backdrop-filter: blur(24px) saturate(170%);
 }
 
 .voice-panel__header {
@@ -23,45 +19,35 @@
 
 .voice-panel__title {
   font-family: var(--font-display);
-  font-size: 1.14rem;
-  letter-spacing: -0.04em;
+  font-size: 1rem;
   color: var(--text-primary);
 }
 
 .voice-panel__hint {
-  margin-top: 6px;
+  margin-top: 3px;
   color: var(--text-muted);
-  font-size: 0.92rem;
-  line-height: 1.58;
+  font-size: 0.88rem;
+  line-height: 1.45;
 }
 
 .voice-panel__status {
-  padding: 9px 12px;
-  border-radius: 999px;
-  background: rgba(140, 234, 214, 0.12);
-  border: 1px solid rgba(140, 234, 214, 0.18);
-  color: var(--accent);
-  font-size: 0.74rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  color: var(--success);
+  font-size: 0.82rem;
+  font-weight: 700;
   white-space: nowrap;
 }
 
 .voice-panel__status--speaking {
-  background: rgba(137, 188, 255, 0.14);
-  border-color: rgba(137, 188, 255, 0.18);
   color: var(--accent-secondary);
 }
 
 .voice-panel__status--muted {
-  background: rgba(255, 200, 122, 0.14);
-  border-color: rgba(255, 200, 122, 0.18);
   color: var(--warning);
 }
 
 .voice-panel__controls {
   display: grid;
-  grid-template-columns: 120px minmax(0, 1fr) minmax(150px, 180px);
+  grid-template-columns: 86px minmax(0, 1fr);
   gap: 12px;
   align-items: end;
 }
@@ -69,34 +55,38 @@
 .voice-panel__field {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 7px;
+}
+
+.voice-panel__field:last-child {
+  grid-column: 1 / -1;
 }
 
 .voice-panel__label {
-  font-size: 0.72rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
   color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
 .voice-panel__toggle,
 .voice-panel__select,
 .voice-panel__button {
-  min-height: 46px;
-  padding: 11px 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  background: rgba(9, 17, 25, 0.68);
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
   color: var(--text-primary);
 }
 
 .voice-panel__toggle {
   width: 100%;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .voice-panel__toggle--on {
-  border-color: rgba(140, 234, 214, 0.2);
+  border-color: var(--accent);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
@@ -115,44 +105,33 @@
 
 .voice-panel__value {
   color: var(--text-muted);
-  font-size: 0.86rem;
+  font-size: 0.84rem;
 }
 
 .voice-panel__actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
 }
 
 .voice-panel__button {
   flex: 1 1 0;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+.voice-panel__button:not(:disabled):hover {
+  background: var(--surface-muted);
 }
 
 .voice-panel__button--secondary {
   color: var(--text-secondary);
 }
 
-@media (max-width: 900px) {
-  .voice-panel__controls {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 720px) {
-  .voice-panel {
-    border-radius: 24px;
-    padding: 18px 16px;
-  }
-
   .voice-panel__header {
     flex-direction: column;
   }
 
   .voice-panel__status {
     align-self: flex-start;
-  }
-
-  .voice-panel__actions {
-    flex-direction: column;
   }
 }

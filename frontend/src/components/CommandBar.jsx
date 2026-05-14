@@ -369,97 +369,112 @@ export default function CommandBar({ onCommand, isContinuous, autoListenSignal, 
   }, [cleanupRecorder, refreshAudioInputs])
 
   const labels = {
-    idle: 'Tap To Speak',
+    idle: 'Speak',
     recording: 'Send Command',
     processing: 'Working...',
-    success: 'Ready Again',
+    success: 'Ready',
     error: 'Try Again',
+  }
+
+  const statusText = {
+    idle: 'Ready.',
+    recording: inputLevel > LOW_SIGNAL_LEVEL
+      ? 'Listening. Tap again to send.'
+      : 'Listening for your voice.',
+    processing: 'Working...',
+    success: 'Done.',
+    error: 'Try again.',
   }
 
   const isDisabled = uiState === 'processing'
 
   return (
-    <section className="command-bar" aria-label="Voice command trigger">
-      <button
-        className={`speak-btn speak-btn--${uiState}`}
-        onClick={handleClick}
-        disabled={isDisabled}
-        aria-pressed={uiState === 'recording'}
-        aria-label={labels[uiState]}
-        aria-busy={uiState === 'recording' || uiState === 'processing'}
-      >
-        <span className="speak-btn__icon" aria-hidden="true">
-          {uiState === 'recording' && <PulseRing />}
-          {uiState === 'processing' && <span className="spinner" />}
-          {(uiState === 'idle' || uiState === 'success' || uiState === 'error') && <MicIcon />}
-        </span>
-        <span className="speak-btn__label">{labels[uiState]}</span>
-      </button>
+    <section className={`command-bar command-bar--${uiState}`} aria-label="Voice command trigger">
+      <div className="command-bar__primary">
+        <button
+          className={`speak-btn speak-btn--${uiState}`}
+          onClick={handleClick}
+          disabled={isDisabled}
+          aria-pressed={uiState === 'recording'}
+          aria-label={labels[uiState]}
+          aria-busy={uiState === 'recording' || uiState === 'processing'}
+        >
+          <span className="speak-btn__icon" aria-hidden="true">
+            {uiState === 'recording' && <PulseRing />}
+            {uiState === 'processing' && <span className="spinner" />}
+            {(uiState === 'idle' || uiState === 'success' || uiState === 'error') && <MicIcon />}
+          </span>
+          <span className="speak-btn__label">{labels[uiState]}</span>
+        </button>
 
-      <div className="command-bar__controls">
-        <label className="command-bar__device">
-          <span className="command-bar__control-label">Microphone</span>
-          <select
-            className="command-bar__select"
-            value={selectedDeviceId}
-            onChange={(event) => setSelectedDeviceId(event.target.value)}
-            disabled={uiState === 'recording' || uiState === 'processing'}
-          >
-            <option value="">System default microphone</option>
-            {audioInputs.map((device, index) => (
-              <option key={device.deviceId || `mic-${index}`} value={device.deviceId}>
-                {device.label || `Microphone ${index + 1}`}
-              </option>
-            ))}
-          </select>
-        </label>
+        <form className="command-bar__text-form" onSubmit={submitTextCommand}>
+          <label className="command-bar__text-label" htmlFor="typed-command">
+            Command
+          </label>
+          <div className="command-bar__text-row">
+            <input
+              id="typed-command"
+              className="command-bar__text-input"
+              type="text"
+              value={textCommand}
+              onChange={(event) => setTextCommand(event.target.value)}
+              placeholder="Type a command"
+              disabled={textSending}
+            />
+            <button
+              className="command-bar__text-submit"
+              type="submit"
+              disabled={!textCommand.trim() || textSending}
+            >
+              {textSending ? 'Working...' : 'Send'}
+            </button>
+          </div>
+        </form>
+      </div>
 
-        <div className="command-bar__meter" aria-live="polite">
-          <span className="command-bar__control-label">Input level</span>
+      <div className="command-bar__status" aria-live="polite">
+        <span className="command-bar__status-text">{statusText[uiState]}</span>
+        {uiState === 'recording' && (
           <div className="command-bar__meter-track" aria-hidden="true">
             <div
               className="command-bar__meter-fill"
               style={{ transform: `scaleX(${clampLevel(inputLevel * 10)})` }}
             />
           </div>
-        </div>
+        )}
       </div>
 
-      <form className="command-bar__text-form" onSubmit={submitTextCommand}>
-        <label className="command-bar__text-label" htmlFor="typed-command">
-          Typed command
-        </label>
-        <div className="command-bar__text-row">
-          <input
-            id="typed-command"
-            className="command-bar__text-input"
-            type="text"
-            value={textCommand}
-            onChange={(event) => setTextCommand(event.target.value)}
-            placeholder="Ask a question or give a local task"
-            disabled={textSending}
-          />
-          <button
-            className="command-bar__text-submit"
-            type="submit"
-            disabled={!textCommand.trim() || textSending}
-          >
-            {textSending ? 'Working...' : 'Send'}
-          </button>
-        </div>
-      </form>
+      <details className="command-bar__advanced">
+        <summary>Microphone</summary>
+        <div className="command-bar__controls">
+          <label className="command-bar__device">
+            <span className="command-bar__control-label">Input</span>
+            <select
+              className="command-bar__select"
+              value={selectedDeviceId}
+              onChange={(event) => setSelectedDeviceId(event.target.value)}
+              disabled={uiState === 'recording' || uiState === 'processing'}
+            >
+              <option value="">System default microphone</option>
+              {audioInputs.map((device, index) => (
+                <option key={device.deviceId || `mic-${index}`} value={device.deviceId}>
+                  {device.label || `Microphone ${index + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
 
-      <p className="command-bar__hint" aria-live="polite">
-        {uiState === 'idle'
-          ? 'Tap once to start listening, speak naturally, then tap again when you are ready to send the command.'
-          : uiState === 'recording'
-            ? inputLevel > LOW_SIGNAL_LEVEL
-              ? 'Signal looks healthy. Tap again when you are done and I will route the request.'
-              : 'Speak now. If the input meter stays flat, switch microphones below.'
-            : uiState === 'processing'
-              ? 'Transcribing, grounding the request against your computer, and preparing the next action...'
-              : null}
-      </p>
+          <div className="command-bar__meter" aria-live="polite">
+            <span className="command-bar__control-label">Level</span>
+            <div className="command-bar__meter-track" aria-hidden="true">
+              <div
+                className="command-bar__meter-fill"
+                style={{ transform: `scaleX(${clampLevel(inputLevel * 10)})` }}
+              />
+            </div>
+          </div>
+        </div>
+      </details>
     </section>
   )
 }

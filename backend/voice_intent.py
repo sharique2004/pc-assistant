@@ -832,6 +832,13 @@ def _fast_path_intent(transcript: str) -> dict[str, Any] | None:
             "confidence": 0.99,
         }
 
+    if _is_claude_task_request(cleaned):
+        return {
+            "intent": "general",
+            "parameters": {"raw_text": cleaned},
+            "confidence": 0.98,
+        }
+
     if _is_codex_task_request(cleaned):
         return {
             "intent": "general",
@@ -1099,6 +1106,16 @@ def _is_codex_task_request(transcript: str) -> bool:
     return any(re.match(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
 
 
+def _is_claude_task_request(transcript: str) -> bool:
+    lowered = re.sub(r"\s+", " ", str(transcript or "").strip().lower()).strip(" .?!")
+    patterns = (
+        r"^(?:please\s+)?(?:use|ask|tell|run)\s+claude(?:\s+code)?\s+(?:to\s+)?\S+",
+        r"^(?:please\s+)?(?:have|let)\s+claude(?:\s+code)?\s+\S+",
+        r"^claude(?:\s+code)?\s+\S+",
+    )
+    return any(re.match(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
+
+
 def _is_launch_minecraft_request(transcript: str) -> bool:
     lowered = re.sub(r"\s+", " ", str(transcript or "").strip().lower()).strip(" .?!")
     return lowered in {
@@ -1112,8 +1129,9 @@ def _is_launch_minecraft_request(transcript: str) -> bool:
 def _is_app_search_request(transcript: str) -> bool:
     lowered = re.sub(r"\s+", " ", str(transcript or "").strip().lower()).strip(" .?!")
     patterns = (
-        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+.+?\s+and\s+(?:search(?:\s+up)?|look up|google)\s+.+$",
+        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+.+?\s+and\s+(?:search(?:\s+up)?|look\s+up|google|ask(?:\s+(?:about|me))?|find(?:\s+(?:out|me))?|tell\s+me\s+about)\s+.+$",
         r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+.+?\s+and\s+search\s+for\s+.+$",
+        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+.+?\s+and\s+look\s+for\s+.+$",
     )
     return any(re.match(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
 
@@ -1121,9 +1139,11 @@ def _is_app_search_request(transcript: str) -> bool:
 def _is_app_message_request(transcript: str) -> bool:
     lowered = re.sub(r"\s+", " ", str(transcript or "").strip().lower()).strip(" .?!")
     patterns = (
-        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+.+?\s+(?:and\s+)?search(?:\s+up)?\s+(?:for\s+)?.+?\s+and\s+(?:write|send|message|say)\s+.+$",
+        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+.+?\s+(?:and\s+)?search(?:\s+up)?\s+(?:for\s+)?.+?\s+and\s+(?:write|send|message|say|tell|text)\s+.+$",
         r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+.+?\s+(?:and\s+)?message\s+.+?\s+(?:that\s+|saying\s+|with\s+the\s+message\s+)?.+$",
+        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+.+?\s+(?:and\s+)?(?:tell|text)\s+(?!me\b)[a-z][a-z0-9 .'-]{0,40}\s+(?:that\s+|saying\s+)?.+$",
         r"^(?:please\s+)?send\s+.+?\s+(?:a\s+)?message\s+on\s+.+?\s+(?:that\s+|saying\s+)?.+$",
+        r"^(?:please\s+)?message\s+.+?\s+on\s+.+?\s+(?:that\s+|saying\s+)?.+$",
     )
     return any(re.match(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
 

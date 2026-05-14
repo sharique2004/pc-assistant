@@ -21,7 +21,7 @@ export default function VoicePanel({
           <span className="voice-panel__status voice-panel__status--muted">Unavailable</span>
         </div>
         <p className="voice-panel__hint">
-          This browser does not expose local speech synthesis, so spoken replies are unavailable here.
+          Spoken replies are unavailable in this browser.
         </p>
       </section>
     )
@@ -33,7 +33,7 @@ export default function VoicePanel({
         <div>
           <h2 className="voice-panel__title">Voice Replies</h2>
           <p className="voice-panel__hint">
-            Uses your local Windows voice engine through the backend so replies stay offline.
+            Choose how replies sound.
           </p>
         </div>
         <span className={`voice-panel__status ${isSpeaking ? 'voice-panel__status--speaking' : ''}`}>
@@ -96,7 +96,7 @@ export default function VoicePanel({
           onClick={onTestVoice}
           disabled={!voiceEnabled}
         >
-          Test Voice
+          Test
         </button>
         <button
           type="button"

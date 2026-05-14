@@ -13,6 +13,7 @@ guessing from a handful of hardcoded names every time.
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import re
 import shutil
@@ -55,6 +56,7 @@ _FILE_SEARCH_MAX_VISITED = 4500
 _APP_SOURCE_PRIORITY = {
     "alias": 1.0,
     "running_process": 0.96,
+    "start_app": 0.95,         # Get-StartApps - covers Microsoft Store apps with AUMIDs
     "registry": 0.94,
     "windows_apps": 0.9,
     "start_menu": 0.88,
@@ -208,7 +210,12 @@ def refresh_app_catalog(force: bool = False) -> int:
 
     discovered: dict[str, dict[str, str]] = {}
     for display_name, path, source in _iter_discovered_apps():
-        normalized_path = str(Path(path)).replace("\\", "/")
+        raw_path = str(path or "")
+        if raw_path.lower().startswith(("shell:", "ms-")):
+            # AUMID / protocol URIs require literal backslashes - never slashify.
+            normalized_path = raw_path
+        else:
+            normalized_path = str(Path(raw_path)).replace("\\", "/")
         existing = discovered.get(normalized_path)
         if existing and _APP_SOURCE_PRIORITY.get(existing["source"], 0.5) >= _APP_SOURCE_PRIORITY.get(source, 0.5):
             continue
@@ -567,6 +574,7 @@ def search_memories(query: str, limit: int = 5) -> list[str]:
 def _iter_discovered_apps() -> Iterable[tuple[str, str, str]]:
     seen_paths: set[str] = set()
     for iterator in (
+        _iter_start_apps_aumid(),
         _iter_registry_apps(),
         _iter_windows_apps(),
         _iter_start_menu_apps(),
@@ -574,16 +582,81 @@ def _iter_discovered_apps() -> Iterable[tuple[str, str, str]]:
         _iter_search_root_apps(),
     ):
         for display_name, path, source in iterator:
-            try:
-                resolved_path = str(Path(path).resolve()).replace("\\", "/")
-            except OSError:
-                resolved_path = str(path).replace("\\", "/")
+            raw_path = str(path or "")
+            if raw_path.lower().startswith("shell:"):
+                # AUMID launch URI - keep verbatim, do not run through Path.resolve().
+                resolved_path = raw_path
+            else:
+                try:
+                    resolved_path = str(Path(raw_path).resolve()).replace("\\", "/")
+                except OSError:
+                    resolved_path = raw_path.replace("\\", "/")
 
             if resolved_path.lower() in seen_paths or _should_skip_app(display_name, resolved_path):
                 continue
 
             seen_paths.add(resolved_path.lower())
             yield display_name, resolved_path, source
+
+
+def _iter_start_apps_aumid() -> Iterable[tuple[str, str, str]]:
+    """
+    Enumerate Start Menu apps via PowerShell's Get-StartApps and yield them as
+    launchable candidates using the shell:AppsFolder\\<AUMID> URI scheme.
+
+    This is the only reliable way to discover Microsoft Store / UWP / MSIX
+    apps (Spotify, WhatsApp, Notepad, etc.) without admin permissions on
+    C:\\Program Files\\WindowsApps.
+    """
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell:
+        return
+
+    try:
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "Get-StartApps | ConvertTo-Json -Compress",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+    stdout = (completed.stdout or "").strip()
+    if not stdout:
+        return
+
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        return
+
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return
+
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("Name") or "").strip()
+        app_id = str(entry.get("AppID") or "").strip()
+        if not name or not app_id:
+            continue
+        # AppID examples:
+        #   "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"      (Store / MSIX)
+        #   "Chrome"                                           (legacy shortcut)
+        #   "{6D809377-6AF0-444B-8957-A3773F02200E}\\Foo.lnk"  (filesystem)
+        # All three forms are launchable via shell:AppsFolder\<AppID>.
+        yield name, f"shell:AppsFolder\\{app_id}", "start_app"
 
 
 def _iter_registry_apps() -> Iterable[tuple[str, str, str]]:

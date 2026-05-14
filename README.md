@@ -162,16 +162,31 @@ into the bar at the bottom of the page).
 
 | Intent | Examples |
 |---|---|
-| `open_app` | "Open Chrome." "Launch VS Code." "Start Spotify." |
+| `open_app` | "Open Chrome." "Launch VS Code." "Start Spotify." "Open WhatsApp." (Microsoft Store apps work too — the world model enumerates Start Menu AUMIDs via `Get-StartApps`.) |
 | `create_file` | "Create a Python file called `hello.py`." "Make a markdown file named `notes`." |
 | `create_app` | "Build me a to-do list app." (requires confirmation before writing) |
 | `search_pc` | "Find the resume I saved last week." "Search for `presentation.pptx`." |
 | `system_query` | "What apps are running?" "How much memory am I using?" "What is the active window?" |
-| `general` | Anything else — answered by the local Mistral model. |
+| **App + action** | "Open ChatGPT and ask how to make pasta." "Open WhatsApp and tell Alex I'm running late." "Open Claude and search for the best speaker." |
+| **Coding hand-off** | "Use Claude to build me a React budget tracker." "Use Codex to write a Python script that renames files." Plain "Build me a React dashboard" auto-routes to Claude; plain "Build me a Python CLI tool" auto-routes to Codex. |
+| `general` | Anything else — answered by the local Mistral planner that can call any tool above. |
 
 The intent classifier returns a confidence score; anything below
 `CLARIFY_THRESHOLD` is routed to a clarification prompt so the assistant asks
 the user for more detail instead of guessing.
+
+### Coding hand-off routing
+
+The `create_app` flow chooses between three back-ends based on the request:
+
+| Signal in description | Routed to | Why |
+|---|---|---|
+| Explicit "use claude" / "claude code" / mentions React, Vue, Next.js, frontend, backend, dashboard, full-stack, mobile app, etc. | **Claude Code CLI** | Better at multi-file projects, UI work, and architectural reasoning. |
+| Explicit "use codex" or long script-style request mentioning app / tool / program | **Codex CLI** | Fast for focused scripts and one-shot CLI utilities. |
+| Anything else | **Local Ollama** (`qwen2.5-coder:14b`) | Fully offline fallback. |
+
+Both CLI paths return `requires_confirmation: true` so the React UI asks for
+your approval before any code is generated.
 
 ---
 

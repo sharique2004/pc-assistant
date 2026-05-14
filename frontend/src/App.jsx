@@ -11,6 +11,7 @@ const VOICE_ENABLED_KEY = 'pc-assistant.voice-enabled'
 const VOICE_URI_KEY = 'pc-assistant.voice-uri'
 const VOICE_RATE_KEY = 'pc-assistant.voice-rate'
 const CONTINUOUS_MODE_KEY = 'pc-assistant.continuous-mode'
+const DARK_MODE_KEY = 'pc-assistant.dark-mode'
 const CONTINUOUS_REARM_MS = 950
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
   const [selectedVoiceURI, setSelectedVoiceURI] = useState(() => readStoredString(VOICE_URI_KEY, 'windows-default'))
   const [speechRate, setSpeechRate] = useState(() => readStoredNumber(VOICE_RATE_KEY, 1.0))
   const [isContinuous, setIsContinuous] = useState(() => readStoredBoolean(CONTINUOUS_MODE_KEY, false))
+  const [isDarkMode, setIsDarkMode] = useState(() => readStoredBoolean(DARK_MODE_KEY, false))
   const [autoListenSignal, setAutoListenSignal] = useState(0)
 
   const currentAudioRef = useRef(null)
@@ -38,13 +40,6 @@ export default function App() {
     isSpeaking,
     voiceEnabled,
     isContinuous,
-  })
-  const stageCards = buildStageCards({
-    latestCommand,
-    voiceEnabled,
-    isSpeaking,
-    isContinuous,
-    commandCount: commands.length,
   })
 
   useEffect(() => {
@@ -78,6 +73,15 @@ export default function App() {
   useEffect(() => {
     writeStoredBoolean(CONTINUOUS_MODE_KEY, isContinuous)
   }, [isContinuous])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return
+    }
+
+    document.documentElement.dataset.theme = isDarkMode ? 'dark' : 'light'
+    writeStoredBoolean(DARK_MODE_KEY, isDarkMode)
+  }, [isDarkMode])
 
   const releaseCurrentAudio = useCallback(() => {
     if (currentAudioRef.current) {
@@ -276,140 +280,113 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <div className="app-shell__glow app-shell__glow--left" aria-hidden="true" />
-      <div className="app-shell__glow app-shell__glow--right" aria-hidden="true" />
-
       <header className="app-header">
         <div className="app-brand">
-          <span className="app-logo" aria-hidden="true">
-            <span className="app-logo__core" />
-          </span>
+          <span className="app-logo" aria-hidden="true" />
           <div className="app-brand__copy">
-            <span className="app-brand__eyebrow">Liquid local desktop control</span>
             <h1 className="app-title">PC Assistant</h1>
-            <p className="app-tagline">A quieter, faster command layer for your own computer.</p>
+            <p className="app-tagline">A calm command space for your computer.</p>
           </div>
         </div>
 
-        <div className="app-header__side">
+        <div className="app-header__actions">
+          <label className="theme-toggle">
+            <input
+              type="checkbox"
+              checked={isDarkMode}
+              onChange={(event) => setIsDarkMode(event.target.checked)}
+            />
+            <span className="theme-toggle__track" aria-hidden="true">
+              <span className="theme-toggle__thumb" />
+            </span>
+            <span className="theme-toggle__text">Dark</span>
+          </label>
+
           <div className={`app-header__signal app-header__signal--${heroState.tone}`}>
             <span className="app-header__signal-dot" aria-hidden="true" />
             {heroState.status}
           </div>
-          <div className="app-header__meta" aria-label="Assistant traits">
-            <span className="app-pill">100% local</span>
-            <span className="app-pill app-pill--soft">Voice first</span>
-            <span className="app-pill app-pill--soft">Windows aware</span>
-          </div>
         </div>
       </header>
 
-      <div className="app-body">
-        <main className="app-main">
-          <section className="voice-stage" aria-label="Voice session">
-            <div className="voice-stage__veil voice-stage__veil--one" aria-hidden="true" />
-            <div className="voice-stage__veil voice-stage__veil--two" aria-hidden="true" />
+      <main className="app-main">
+        <section className="assistant-console" aria-label="Assistant command console">
+          <div className="assistant-console__header">
+            <div>
+              <span className="assistant-console__eyebrow">Now</span>
+              <h2 className="assistant-console__title">{heroState.summary}</h2>
+            </div>
 
-            <div className="voice-stage__topline">
-              <span className="voice-stage__eyebrow">Local AI command center</span>
-              <span className={`voice-stage__status voice-stage__status--${heroState.tone}`}>
-                {heroState.status}
+            <label className="continuous-mode-toggle">
+              <input
+                type="checkbox"
+                checked={isContinuous}
+                onChange={(event) => setIsContinuous(event.target.checked)}
+              />
+              <span className="continuous-mode-toggle__track" aria-hidden="true">
+                <span className="continuous-mode-toggle__thumb" />
               </span>
-            </div>
-
-            <div className="voice-stage__content">
-              <div className="voice-stage__copy">
-                <h2 className="voice-stage__title">Speak once. Stay in flow.</h2>
-                <p className="voice-stage__summary">{heroState.summary}</p>
-                <p className="voice-stage__detail">{heroState.detail}</p>
-              </div>
-
-              <div className="voice-stage__side">
-                <div className="voice-stage__snapshot" aria-label="Latest interaction">
-                  <span className="voice-stage__snapshot-label">Latest interaction</span>
-                  <p className="voice-stage__snapshot-text">
-                    {latestCommand?.intent?.raw_transcript
-                      ? `"${latestCommand.intent.raw_transcript}"`
-                      : 'No command yet. Try "open Claude", "find my resume", or "what apps are running".'}
-                  </p>
-                  <p className="voice-stage__snapshot-result">
-                    {buildSnapshotLine(latestCommand)}
-                  </p>
-                </div>
-
-                <div className="voice-stage__stats" aria-label="Session state">
-                  {stageCards.map((card) => (
-                    <article
-                      key={card.label}
-                      className={`voice-stage__stat voice-stage__stat--${card.tone}`}
-                    >
-                      <span className="voice-stage__stat-label">{card.label}</span>
-                      <strong className="voice-stage__stat-value">{card.value}</strong>
-                      <span className="voice-stage__stat-detail">{card.detail}</span>
-                    </article>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <CommandBar
-              onCommand={addCommand}
-              isContinuous={isContinuous}
-              autoListenSignal={autoListenSignal}
-              isSpeaking={isSpeaking}
-            />
-
-            <div className="voice-stage__footer">
-              <div className="voice-stage__chips" aria-label="Example capabilities">
-                <span className="voice-stage__chip">Open apps instantly</span>
-                <span className="voice-stage__chip">Work inside existing windows</span>
-                <span className="voice-stage__chip">Search your files semantically</span>
-                <span className="voice-stage__chip">Speak back naturally</span>
-              </div>
-
-              <div className="continuous-mode-toggle">
-                <label className="continuous-mode-toggle__pill">
-                  <input
-                    type="checkbox"
-                    checked={isContinuous}
-                    onChange={(event) => setIsContinuous(event.target.checked)}
-                  />
-                  <span className="continuous-mode-toggle__track" aria-hidden="true">
-                    <span className="continuous-mode-toggle__thumb" />
-                  </span>
-                  <span className="continuous-mode-toggle__text">Continuous conversation</span>
-                </label>
-              </div>
-            </div>
-          </section>
-
-          <div className="assistant-grid">
-            <StatusFeed
-              commands={commands}
-              title="Conversation"
-              emptyText="Your recent voice actions will appear here."
-            />
-
-            <VoicePanel
-              speechSupported={speechSupported}
-              voiceEnabled={voiceEnabled}
-              isSpeaking={isSpeaking}
-              voices={voices}
-              selectedVoiceURI={selectedVoiceURI}
-              speechRate={speechRate}
-              onToggleEnabled={() => setVoiceEnabled((current) => !current)}
-              onSelectVoice={setSelectedVoiceURI}
-              onRateChange={setSpeechRate}
-              onStopSpeaking={() => stopSpeaking(isContinuous)}
-              onTestVoice={handleVoiceTest}
-            />
+              <span className="continuous-mode-toggle__text">Continuous</span>
+            </label>
           </div>
-        </main>
 
-        <aside className="app-sidebar" aria-label="System state">
-          <SystemPanel />
-        </aside>
-      </div>
+          <p className="assistant-console__detail">{heroState.detail}</p>
+
+          <div className="assistant-console__latest" aria-label="Latest interaction">
+            <span className="assistant-console__latest-label">Last</span>
+            <span className="assistant-console__latest-text">
+              {latestCommand?.intent?.raw_transcript || buildSnapshotLine(latestCommand)}
+            </span>
+          </div>
+
+          <CommandBar
+            onCommand={addCommand}
+            isContinuous={isContinuous}
+            autoListenSignal={autoListenSignal}
+            isSpeaking={isSpeaking}
+          />
+        </section>
+
+        <section className="activity-area" aria-label="Activity and settings">
+          <StatusFeed
+            commands={commands}
+            title="Recent Activity"
+            emptyText="Commands will appear here after you speak or type."
+          />
+
+          <div className="quiet-panels">
+            <details className="quiet-disclosure">
+              <summary>
+                <span>Voice settings</span>
+                <span className={`quiet-disclosure__status ${isSpeaking ? 'quiet-disclosure__status--active' : ''}`}>
+                  {isSpeaking ? 'Speaking' : voiceEnabled ? 'On' : 'Muted'}
+                </span>
+              </summary>
+              <VoicePanel
+                speechSupported={speechSupported}
+                voiceEnabled={voiceEnabled}
+                isSpeaking={isSpeaking}
+                voices={voices}
+                selectedVoiceURI={selectedVoiceURI}
+                speechRate={speechRate}
+                onToggleEnabled={() => setVoiceEnabled((current) => !current)}
+                onSelectVoice={setSelectedVoiceURI}
+                onRateChange={setSpeechRate}
+                onStopSpeaking={() => stopSpeaking(isContinuous)}
+                onTestVoice={handleVoiceTest}
+              />
+            </details>
+
+            <details className="quiet-disclosure">
+              <summary>
+                <span>System details</span>
+                <span className="quiet-disclosure__status">Live</span>
+              </summary>
+              <SystemPanel />
+            </details>
+          </div>
+        </section>
+      </main>
 
       {pendingConfirm && (
         <ConfirmModal
@@ -427,7 +404,7 @@ function buildHeroState({ latestCommand, pendingConfirm, isSpeaking, voiceEnable
     return {
       tone: 'warn',
       status: 'Awaiting confirmation',
-      summary: 'I have the next step ready, but I am waiting for your approval before I write or generate anything.',
+      summary: 'Waiting for your approval.',
       detail: pendingConfirm.description,
     }
   }
@@ -436,7 +413,7 @@ function buildHeroState({ latestCommand, pendingConfirm, isSpeaking, voiceEnable
     return {
       tone: 'active',
       status: 'Speaking back',
-      summary: 'I am reading the latest result back to you using your local voice engine.',
+      summary: 'Reading the latest result.',
       detail: latestCommand?.result?.message || 'Your assistant replies are active.',
     }
   }
@@ -445,7 +422,7 @@ function buildHeroState({ latestCommand, pendingConfirm, isSpeaking, voiceEnable
     return {
       tone: 'danger',
       status: 'Needs attention',
-      summary: 'The last action hit a problem, but the session is still live and ready for the next command.',
+      summary: 'The last action needs attention.',
       detail: latestCommand.error,
     }
   }
@@ -454,7 +431,7 @@ function buildHeroState({ latestCommand, pendingConfirm, isSpeaking, voiceEnable
     return {
       tone: 'warn',
       status: 'Needs clarification',
-      summary: latestCommand.result?.message || 'I need a little more detail before I act.',
+      summary: latestCommand.result?.message || 'A little more detail is needed.',
       detail: latestCommand.result?.data?.follow_up || 'Try repeating the command a little more clearly.',
     }
   }
@@ -464,23 +441,21 @@ function buildHeroState({ latestCommand, pendingConfirm, isSpeaking, voiceEnable
       tone: 'ready',
       status: isContinuous ? 'Continuous mode active' : 'Ready again',
       summary: latestCommand.result.message,
-      detail: voiceEnabled
-        ? 'Replies are enabled, so I can answer out loud and keep the interaction flowing.'
-        : 'Voice replies are muted right now, but the assistant is still fully active.',
+      detail: voiceEnabled ? 'Voice replies are on.' : 'Voice replies are muted.',
     }
   }
 
   return {
     tone: 'ready',
     status: isContinuous ? 'Continuous mode active' : 'Standing by',
-    summary: 'Open apps, search files, remember personal details, create things in your workspace, and ask live questions about your computer.',
-    detail: 'Everything stays local: browser mic, local Whisper transcription, local Ollama reasoning, and local speech replies.',
+    summary: 'Ready for a command.',
+    detail: 'Use the mic or type below.',
   }
 }
 
 function buildSnapshotLine(entry) {
   if (!entry) {
-    return 'I will keep your recent actions, confirmations, and answers here.'
+    return 'No recent command.'
   }
 
   if (entry.error) {
@@ -492,35 +467,6 @@ function buildSnapshotLine(entry) {
   }
 
   return 'Ready for the next command.'
-}
-
-function buildStageCards({ latestCommand, voiceEnabled, isSpeaking, isContinuous, commandCount }) {
-  return [
-    {
-      label: 'Voice replies',
-      value: isSpeaking ? 'Speaking now' : voiceEnabled ? 'Ready' : 'Muted',
-      detail: voiceEnabled ? 'Local playback through the backend voice engine.' : 'Replies are silent until you turn them back on.',
-      tone: isSpeaking ? 'active' : voiceEnabled ? 'ready' : 'muted',
-    },
-    {
-      label: 'Conversation mode',
-      value: isContinuous ? 'Hands-free' : 'Tap to talk',
-      detail: isContinuous ? 'The mic rearms after answers when the lane is clear.' : 'You stay fully in control of when capture starts.',
-      tone: isContinuous ? 'active' : 'neutral',
-    },
-    {
-      label: 'Last intent',
-      value: latestCommand?.intent?.intent ? formatIntentName(latestCommand.intent.intent) : 'Awaiting first request',
-      detail: latestCommand?.result?.message || 'Grounded against local apps, files, and window state.',
-      tone: latestCommand?.error ? 'danger' : latestCommand ? 'neutral' : 'ready',
-    },
-    {
-      label: 'Session activity',
-      value: `${commandCount} action${commandCount === 1 ? '' : 's'}`,
-      detail: commandCount ? 'Recent actions stay in the session thread below.' : 'Your command history will build up here as you use it.',
-      tone: commandCount ? 'neutral' : 'muted',
-    },
-  ]
 }
 
 function buildSpeechFromEntry(entry) {
@@ -641,13 +587,6 @@ function summarizeSearchResults(data, fallbackMessage) {
   }
 
   return `I found ${count} matching files. The first few are ${preview}.`
-}
-
-function formatIntentName(intent) {
-  return String(intent)
-    .split('_')
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ')
 }
 
 function readStoredBoolean(key, fallback) {

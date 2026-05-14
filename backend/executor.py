@@ -348,6 +348,30 @@ def _extract_codex_task(raw_text: str) -> str | None:
     return None
 
 
+def _extract_claude_task(raw_text: str) -> str | None:
+    """
+    Detect explicit hand-offs to Claude Code, e.g.:
+        "use claude to build me a budget app"
+        "have claude create a script that renames files"
+        "ask claude code to set up a Flask backend"
+    """
+    cleaned = re.sub(r"\s+", " ", str(raw_text or "").strip()).strip(" .?!")
+    if not cleaned:
+        return None
+
+    patterns = [
+        r"^(?:please\s+)?(?:use|ask|tell|run)\s+claude(?:\s+code)?\s+(?:to\s+)?(?P<task>.+)$",
+        r"^(?:please\s+)?(?:have|let)\s+claude(?:\s+code)?\s+(?P<task>.+)$",
+        r"^claude(?:\s+code)?\s+(?P<task>.+)$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, cleaned, flags=re.IGNORECASE)
+        if match:
+            task = match.group("task").strip(" .?!")
+            return task or None
+    return None
+
+
 def _should_use_codex_for_app(description: str) -> bool:
     provider = (
         os.getenv("APP_BUILDER", "")
@@ -357,6 +381,8 @@ def _should_use_codex_for_app(description: str) -> bool:
     if provider in {"codex", "codex-cli"}:
         return True
     if provider in {"ollama", "local-ollama"}:
+        return False
+    if provider in {"claude", "claude-code"}:
         return False
 
     lowered = str(description or "").lower()
@@ -368,6 +394,45 @@ def _should_use_codex_for_app(description: str) -> bool:
     words = re.findall(r"[a-z0-9]+", lowered)
     appish = any(token in lowered for token in (" app", " application", " website", " tool", " program"))
     return appish and len(words) >= 18
+
+
+def _should_use_claude_for_app(description: str) -> bool:
+    """
+    Decide whether Claude Code is the right tool for a create_app request.
+
+    Routing intent: Claude tends to win on multi-file projects with UI or
+    architectural reasoning (full-stack apps, websites, frontend work, anything
+    needing thoughtful structure across files).  Codex tends to win on quick
+    single-purpose scripts and CLI utilities.  When neither tool is plumbed in
+    or the description is short and script-like, fall back to local Ollama.
+    """
+    provider = (
+        os.getenv("APP_BUILDER", "")
+        or os.getenv("CODEGEN_PROVIDER", "")
+        or ""
+    ).strip().lower()
+    if provider in {"claude", "claude-code"}:
+        return True
+    if provider in {"codex", "codex-cli", "ollama", "local-ollama"}:
+        return False
+
+    lowered = str(description or "").lower()
+    if any(marker in lowered for marker in ("claude code", "claude-code")) or re.search(r"\bclaude\b", lowered):
+        return True
+
+    # Strong UI / multi-file / full-stack signals -> Claude is a better fit.
+    claude_markers = (
+        " website", " web app", " web application", " frontend", " front end",
+        " backend", " back end", " fullstack", " full stack", " full-stack",
+        " react", " vue", " svelte", " next.js", " nextjs", " tailwind",
+        " dashboard", " ui ", " interface", " mobile app", " ios app",
+        " android app", " flask app", " django app", " api server",
+        " desktop app",
+    )
+    if any(marker in f" {lowered} " for marker in claude_markers):
+        return True
+
+    return False
 
 
 def _resolve_codex_executable() -> str:
@@ -390,9 +455,49 @@ def _resolve_codex_executable() -> str:
     )
 
 
+def _resolve_claude_executable() -> str:
+    """Locate the Claude Code CLI (claude or claude.cmd on PATH)."""
+    configured = os.getenv("CLAUDE_CLI_PATH", "").strip().strip('"')
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if configured_path.exists():
+            return str(configured_path)
+        found_configured = shutil.which(configured)
+        if found_configured:
+            return found_configured
+
+    for candidate in ("claude.cmd", "claude.exe", "claude"):
+        found = shutil.which(candidate)
+        if found and not found.lower().endswith(".ps1"):
+            return found
+
+    raise FileNotFoundError(
+        "Could not find the Claude Code CLI on PATH. Install it from "
+        "https://docs.claude.com/claude-code/install before using Claude routing."
+    )
+
+
 def _tail_text(value: str, limit: int = 4000) -> str:
     text = str(value or "")
     return text[-limit:] if len(text) > limit else text
+
+
+def _build_claude_prompt(task: str, target_dir: Path, context: str = "") -> str:
+    context_block = f"\nExtra context:\n{context.strip()}\n" if str(context or "").strip() else ""
+    return (
+        "You are running inside a non-interactive Claude Code session that the "
+        "PC Assistant has spawned in a fresh, empty project directory.\n\n"
+        f"Working directory: {target_dir}\n\n"
+        "Task: " + task.strip() + "\n\n"
+        "Constraints:\n"
+        "- Create whatever files are needed to satisfy the task. Use Write/Edit tools.\n"
+        "- Stay inside the working directory; do not touch anything outside it.\n"
+        "- Do not run servers or long-lived processes; this is a one-shot generation.\n"
+        "- Prefer clear, runnable code over commentary. Include a short README.md with "
+        "  setup and run instructions if the project has more than one file.\n"
+        f"{context_block}"
+        "When you are done, end with one sentence summarizing what you built."
+    )
 
 
 def _build_codex_prompt(task: str, target_dir: Path, context: str = "") -> str:
@@ -414,9 +519,14 @@ def _extract_open_and_search_command(raw_text: str) -> tuple[str, str] | None:
     if not cleaned:
         return None
 
+    # Action verbs that mean "type this into the app's input box":
+    # search, look up, google, ask, ask about, find out, tell me about,
+    # find me / find, look for. Verbs that take a follow-up object
+    # (write/type/paste) are handled by _extract_open_and_type_command instead.
     patterns = [
-        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+(?P<app>.+?)\s+and\s+(?:search(?:\s+up)?|look up|google)\s+(?P<query>.+)$",
+        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+(?P<app>.+?)\s+and\s+(?:search(?:\s+up)?|look\s+up|google|ask(?:\s+(?:about|me))?|find(?:\s+(?:out|me))?|tell\s+me\s+about)\s+(?P<query>.+)$",
         r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+(?P<app>.+?)\s+and\s+search\s+for\s+(?P<query>.+)$",
+        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+(?P<app>.+?)\s+and\s+look\s+for\s+(?P<query>.+)$",
     ]
     for pattern in patterns:
         match = re.match(pattern, cleaned, flags=re.IGNORECASE)
@@ -433,10 +543,21 @@ def _extract_open_and_message_command(raw_text: str) -> tuple[str, str, str] | N
     if not cleaned:
         return None
 
+    # Recognized phrasings:
+    #   "open WhatsApp and search Alex and write hi"
+    #   "open WhatsApp and message Alex hi"
+    #   "open WhatsApp and tell Alex I am running late"
+    #   "open WhatsApp and text Alex hi"
+    #   "send Alex a message on WhatsApp saying hi"
+    #   "message Alex on WhatsApp that I am running late"
     patterns = [
-        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+(?P<app>.+?)\s+(?:and\s+)?search(?:\s+up)?\s+(?:for\s+)?(?P<contact>.+?)\s+and\s+(?:write|send|message|say)\s+(?P<message>.+)$",
+        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+(?P<app>.+?)\s+(?:and\s+)?search(?:\s+up)?\s+(?:for\s+)?(?P<contact>.+?)\s+and\s+(?:write|send|message|say|tell|text)\s+(?P<message>.+)$",
         r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+(?P<app>.+?)\s+(?:and\s+)?message\s+(?P<contact>.+?)\s+(?:that\s+|saying\s+|with\s+the\s+message\s+)?(?P<message>.+)$",
+        # "tell ME about ..." / "tell ME how ..." are search queries, not
+        # messages - the negative lookahead defers those to the search regex.
+        r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:open|launch|start|run)\s+(?P<app>.+?)\s+(?:and\s+)?(?:tell|text)\s+(?!me\b)(?P<contact>[a-z][a-z0-9 .'-]{0,40}?)\s+(?:that\s+|saying\s+)?(?P<message>.+)$",
         r"^(?:please\s+)?send\s+(?P<contact>.+?)\s+(?:a\s+)?message\s+on\s+(?P<app>.+?)\s+(?:that\s+|saying\s+)?(?P<message>.+)$",
+        r"^(?:please\s+)?message\s+(?P<contact>.+?)\s+on\s+(?P<app>.+?)\s+(?:that\s+|saying\s+)?(?P<message>.+)$",
     ]
     for pattern in patterns:
         match = re.match(pattern, cleaned, flags=re.IGNORECASE)
@@ -767,6 +888,10 @@ def launch_minecraft() -> dict:
 
 
 def _handle_direct_general_shortcut(raw_text: str) -> dict[str, Any] | None:
+    claude_task = _extract_claude_task(raw_text)
+    if claude_task is not None:
+        return run_claude_task(claude_task)
+
     codex_task = _extract_codex_task(raw_text)
     if codex_task is not None:
         return run_codex_task(codex_task)
@@ -822,9 +947,15 @@ def _iter_launch_candidates(app_name: str) -> list[dict[str, Any]]:
     seen_paths: set[str] = set()
 
     def add_candidate(display_name: str, path: str, source: str, score: float = 1.0) -> None:
-        normalized_path = str(path or "").replace("\\", "/").strip()
-        if not normalized_path:
+        raw_path = str(path or "").strip()
+        if not raw_path:
             return
+        # Preserve backslashes in shell URIs (shell:AppsFolder\<AUMID>) and other
+        # protocol launchers - ShellExecute rejects forward-slash forms.
+        if raw_path.lower().startswith(("shell:", "ms-")):
+            normalized_path = raw_path
+        else:
+            normalized_path = raw_path.replace("\\", "/")
         lowered_path = normalized_path.lower()
         if lowered_path in seen_paths:
             return
@@ -852,19 +983,75 @@ def _iter_launch_candidates(app_name: str) -> list[dict[str, Any]]:
     if resolved_path:
         add_candidate(_friendly_app_name(resolved_path, app_name), resolved_path, "resolved_path", 0.95)
 
+    # Only accept suggestions that meaningfully resemble the query. Without
+    # this floor, world_model.suggest_apps returns its top-5 by score even
+    # when none of them are actually a match, which has previously caused
+    # "Open WhatsApp" -> "Open ChatGPT" misfires when WhatsApp was not yet
+    # in the apps catalog.
+    suggestion_floor = float(os.getenv("APP_SUGGEST_SCORE_FLOOR", "0.72"))
     suggestions = world_model.suggest_apps(app_name, limit=5)
     for suggestion in suggestions:
         suggestion_path = str(suggestion.get("path") or "").strip()
         if not suggestion_path:
             continue
+        suggestion_score = float(suggestion.get("score", 0.0) or 0.0)
+        if suggestion_score < suggestion_floor:
+            continue
         add_candidate(
             str(suggestion.get("display_name") or app_name),
             suggestion_path,
             str(suggestion.get("source") or "suggestion"),
-            float(suggestion.get("score", 0.0) or 0.0),
+            suggestion_score,
         )
 
     return candidates
+
+
+def _is_launch_uri(path: str) -> bool:
+    """Return True if `path` is a shell URI (AUMID, ms-* protocol, etc.)."""
+    return str(path or "").lower().startswith(("shell:", "ms-"))
+
+
+def _alias_matches_resolution(spoken_name: str, display_name: str, exe_path: str) -> bool:
+    """
+    Heuristic: only persist a learned alias if what we actually launched has a
+    real name overlap with what the user said.  Prevents "Open WhatsApp" from
+    teaching the world model that "WhatsApp -> unsecapp.exe" when the resolver
+    misfires once.
+    """
+    spoken_compact = _compact_app_name(spoken_name)
+    if not spoken_compact:
+        return False
+
+    candidates = [
+        _compact_app_name(display_name),
+        _compact_app_name(Path(exe_path).stem) if exe_path and not _is_launch_uri(exe_path) else "",
+        # For shell:AppsFolder\<vendor>.<AppName>_<hash>!Entry, pull <AppName>.
+        _compact_app_name(re.split(r"[\\!]", str(exe_path))[-1]) if _is_launch_uri(exe_path) else "",
+        _compact_app_name(re.split(r"[\\!.]", str(exe_path))[-2]) if _is_launch_uri(exe_path) and "." in str(exe_path) else "",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if spoken_compact in candidate or candidate in spoken_compact:
+            return True
+        # Allow short typos / pronunciations: ratio >= 0.7 against either side.
+        ratio = difflib.SequenceMatcher(None, spoken_compact, candidate).ratio()
+        if ratio >= 0.7:
+            return True
+    return False
+
+
+def _launchable_target_exists(path: str) -> bool:
+    """
+    Treat shell URIs and protocol launchers as always-present, since
+    os.path.exists() can only answer for filesystem paths.
+    """
+    if not path:
+        return False
+    if _is_launch_uri(path):
+        return True
+    return os.path.exists(path)
 
 
 def _choose_launch_candidate(app_name: str) -> dict[str, Any] | None:
@@ -877,12 +1064,14 @@ def _choose_launch_candidate(app_name: str) -> dict[str, Any] | None:
         path = str(candidate.get("path") or "")
         source = str(candidate.get("source") or "")
         score = float(candidate.get("score", 0.0) or 0.0)
-        if os.path.exists(path):
+        if _launchable_target_exists(path):
             score += 0.45
         if source == "running_process":
             score += 0.35
         if source == "resolved_path":
             score += 0.2
+        if source == "start_app":
+            score += 0.25
         scored_candidates.append((score, candidate))
 
     scored_candidates.sort(key=lambda item: item[0], reverse=True)
@@ -925,10 +1114,35 @@ def _launch_app_candidate(app_name: str) -> tuple[str, str]:
 def _verify_app_launch(exe_path: str, resolved_name: str, timeout_s: float = 4.0) -> bool:
     """
     Best-effort verification that a launched application actually appeared.
+
+    For filesystem paths we look for a running process whose stem matches the
+    executable's stem.  For shell URIs (AUMIDs), the resolved process name
+    rarely matches the AUMID — we fall back to a contains-check against the
+    user-facing resolved_name (e.g. "WhatsApp" matches "WhatsApp.Root.exe").
     """
-    normalized_target = _normalize_app_name(Path(exe_path).stem or resolved_name)
     deadline = time.time() + timeout_s
 
+    if _is_launch_uri(exe_path):
+        normalized_target = _normalize_app_name(resolved_name)
+        target_compact = _compact_app_name(resolved_name)
+        if not normalized_target:
+            return False
+        while time.time() < deadline:
+            try:
+                for name, _ in _iter_running_app_candidates():
+                    candidate_compact = _compact_app_name(name)
+                    if candidate_compact and target_compact and (
+                        candidate_compact == target_compact
+                        or candidate_compact.startswith(target_compact)
+                        or target_compact in candidate_compact
+                    ):
+                        return True
+            except Exception:
+                break
+            time.sleep(0.35)
+        return False
+
+    normalized_target = _normalize_app_name(Path(exe_path).stem or resolved_name)
     while time.time() < deadline:
         try:
             if any(
@@ -1183,7 +1397,8 @@ def _build_planner_prompt(raw_text: str, history: list[dict[str, Any]], step: in
         '- type_in_window: {"window_hint": "current window", "text": "hello there", "submit": false, "navigate_search": false, "select_all": false}\n'
         '- click_button: {"window_hint": "Prism Launcher", "button_text": "Launch"}\n'
         '- press_keys: {"window_hint": "current window", "keys": "ctrl l"}\n'
-        '- codex_task: {"task": "build a React budget tracker app", "project_name": "budget tracker"}\n'
+        '- codex_task: {"task": "write a python script that renames files", "project_name": "rename script"}\n'
+        '- claude_task: {"task": "build a React budget tracker with charts", "project_name": "budget tracker"}\n'
         '- launch_minecraft: {}\n'
         '- remember_fact: {"fact": "I usually work in C:/Users/Sharique Khatri"}\n\n'
         "Rules:\n"
@@ -1195,7 +1410,8 @@ def _build_planner_prompt(raw_text: str, history: list[dict[str, Any]], step: in
         "- Use type_in_window to type into the current or named window when the app is already open.\n"
         "- Use click_button to click visible UI buttons in the current or named window.\n"
         "- Use press_keys for safe shortcuts like ctrl l, ctrl f, enter, tab, or escape.\n"
-        "- Use codex_task for complex coding, app-building, debugging, or repo-editing tasks, especially when the user asks to use Codex.\n"
+        "- Use codex_task for fast script-style coding work and CLI utilities, or when the user explicitly says \"use Codex\".\n"
+        "- Use claude_task for multi-file projects, UI/frontend work, full-stack apps, or anything needing thoughtful architecture, or when the user says \"use Claude\".\n"
         "- Use launch_minecraft when the user asks to launch Minecraft through Prism Launcher.\n"
         "- When the user refers to the current app/window/tab, use window_hint as \"current window\".\n"
         "- Treat known apps and system state as environment context, not as personal memory facts.\n"
@@ -1270,6 +1486,12 @@ def _execute_planner_tool(tool_name: str, arguments: dict[str, Any], raw_text: s
             project_name=str(args.get("project_name") or "").strip(),
             context=str(args.get("context") or "").strip(),
         )
+    if tool == "claude_task":
+        return run_claude_task(
+            str(args.get("task") or raw_text).strip(),
+            project_name=str(args.get("project_name") or "").strip(),
+            context=str(args.get("context") or "").strip(),
+        )
     if tool == "launch_minecraft":
         return launch_minecraft()
     if tool == "remember_fact":
@@ -1339,7 +1561,11 @@ def open_app(app_name: str) -> dict:
         exe_path, resolved_name = _launch_app_candidate(app_name)
         _log_activity(f"Launched application: {exe_path}")
         remembered_candidate = _choose_launch_candidate(app_name)
-        if remembered_candidate is not None:
+        if remembered_candidate is not None and _alias_matches_resolution(
+            app_name,
+            remembered_candidate.get("display_name") or resolved_name,
+            remembered_candidate.get("path") or exe_path,
+        ):
             world_model.remember_app_alias(
                 app_name,
                 {
@@ -1409,6 +1635,107 @@ def create_file(file_name: str, file_type: str, content: str = "") -> dict:
             fn=do_create,
             kwargs={"path": target_path, "data": content},
             description=f"Create {target.name} in {os.path.dirname(target_path)}"
+        )
+    except Exception as e:
+        return {"success": False, "message": str(e), "data": {}, "requires_confirmation": False}
+
+
+def run_claude_task(task: str, project_name: str = "", context: str = "") -> dict:
+    """
+    Hand a coding task off to Claude Code in non-interactive (--print) mode.
+
+    Creates a fresh project directory under WORKSPACE_DIR, invokes Claude with
+    permission to read/write inside that directory, and returns the final
+    message Claude emits when it finishes.
+
+    Wrapped in _queue_operation because Claude has network-side compute cost,
+    so the user must explicitly confirm via POST /confirm before it runs.
+    """
+    try:
+        clean_task = re.sub(r"\s+", " ", str(task or "").strip())
+        if not clean_task:
+            return {
+                "success": False,
+                "message": "I need a task before I can hand it to Claude.",
+                "data": {},
+                "requires_confirmation": False,
+            }
+
+        slug_source = project_name or clean_task
+        slug = _slugify(slug_source, fallback="claude-task")
+        workspace = Path(os.getenv("WORKSPACE_DIR", _WORKSPACE_DIR))
+        target_dir = workspace / slug
+
+        def do_run_claude(task_text: str, target_path: str, extra_context: str):
+            target = Path(target_path)
+            target.mkdir(parents=True, exist_ok=True)
+
+            claude_executable = _resolve_claude_executable()
+            prompt = _build_claude_prompt(task_text, target, extra_context)
+            timeout_s = max(60.0, _get_env_float("CLAUDE_TASK_TIMEOUT_S", 600.0))
+            model = os.getenv("CLAUDE_TASK_MODEL", "").strip()
+
+            command = [
+                claude_executable,
+                "--print",
+                "--permission-mode", "acceptEdits",
+                "--add-dir", str(target),
+            ]
+            if model:
+                command.extend(["--model", model])
+            command.append(prompt)
+
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                cwd=str(target),
+            )
+
+            stdout_tail = _tail_text(completed.stdout)
+            stderr_tail = _tail_text(completed.stderr)
+            success = completed.returncode == 0
+            last_message = stdout_tail.strip() if success else ""
+
+            if success:
+                message = last_message or f"Claude finished the task in {target}."
+                try:
+                    vscode_path = os.getenv("VSCODE_PATH", "")
+                    if vscode_path and os.path.exists(vscode_path):
+                        subprocess.Popen([vscode_path, str(target)], shell=False)
+                    else:
+                        os.startfile(str(target))
+                except Exception:
+                    pass
+            else:
+                detail = stderr_tail or stdout_tail or f"Claude exited with code {completed.returncode}."
+                message = f"Claude could not finish that task. {detail}"
+
+            _log_activity(f"Claude task returncode={completed.returncode} target={target}")
+            return {
+                "success": success,
+                "message": message,
+                "data": {
+                    "task": task_text,
+                    "project_dir": str(target),
+                    "returncode": completed.returncode,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                    "last_message": last_message,
+                    "tool": "claude_code",
+                },
+                "requires_confirmation": False,
+            }
+
+        return _queue_operation(
+            fn=do_run_claude,
+            kwargs={
+                "task_text": clean_task,
+                "target_path": str(target_dir.resolve()),
+                "extra_context": context,
+            },
+            description=f"Run Claude Code locally for: {clean_task[:90]}",
         )
     except Exception as e:
         return {"success": False, "message": str(e), "data": {}, "requires_confirmation": False}
@@ -1510,8 +1837,21 @@ def run_codex_task(task: str, project_name: str = "", context: str = "") -> dict
 
 def create_app(description: str) -> dict:
     try:
+        clean_description = re.sub(r"\s+", " ", str(description or "").strip())
+
+        # Routing order:
+        #   1. Explicit "use claude / use codex" wins (signaled in description).
+        #   2. UI / multi-file / full-stack work -> Claude Code (better at structure).
+        #   3. Long script-like requests with app/website/program markers -> Codex.
+        #   4. Anything else -> local Ollama codegen.
+        if _should_use_claude_for_app(description):
+            task = (
+                "Create a complete local application for this request: "
+                f"{clean_description}. Include setup and run instructions in a README."
+            )
+            return run_claude_task(task, project_name=clean_description)
+
         if _should_use_codex_for_app(description):
-            clean_description = re.sub(r"\s+", " ", str(description or "").strip())
             task = (
                 "Create a complete local application for this request: "
                 f"{clean_description}. Include setup/run instructions in the project."
@@ -1947,6 +2287,11 @@ def _friendly_app_name(exe_path: str, fallback_name: str) -> str:
     """
     Turn an executable path into a readable app name for user-facing messages.
     """
+    # Shell URIs (e.g. shell:AppsFolder\<AUMID>) cannot be parsed by Path; the
+    # AUMID is a non-friendly identifier anyway, so use the caller's name.
+    if _is_launch_uri(exe_path):
+        cleaned_fallback = _normalize_app_name(fallback_name)
+        return cleaned_fallback.title() if cleaned_fallback else "Application"
     stem = Path(exe_path).stem.replace("-", " ").replace("_", " ").strip()
     if stem:
         return stem.title()
