@@ -817,7 +817,20 @@ def _score_best_app_match(query: str, candidates: list[dict[str, Any]]) -> dict[
     ranked = _rank_app_candidates(query, candidates)
     if not ranked:
         return None
-    return ranked[0] if ranked[0]["score"] >= 0.71 else None
+
+    top = ranked[0]
+    score = float(top["score"])
+
+    # Tiered threshold:
+    #   * If the candidate cleared with QUALITATIVE evidence (exact / prefix /
+    #     substring / soundex match), 0.71 is fine - that's a real match.
+    #   * If the candidate is high purely on raw fuzzy ratio + source priority
+    #     (no name overlap, no soundex), require a much stricter floor.
+    #     This prevents "Open Spotify" from picking "AppVShNotify" when
+    #     Spotify is not installed.
+    if top.get("has_qualitative_match"):
+        return top if score >= 0.71 else None
+    return top if score >= 0.85 else None
 
 
 def _rank_app_candidates(query: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -830,15 +843,22 @@ def _rank_app_candidates(query: str, candidates: list[dict[str, Any]]) -> list[d
         compact_name = str(candidate.get("compact_name") or "")
         score = difflib.SequenceMatcher(None, compact_query, compact_name).ratio()
 
+        has_qualitative_match = False
         if normalized_name == query or compact_name == compact_query:
             score += 0.5
+            has_qualitative_match = True
         elif normalized_name.startswith(query) or compact_name.startswith(compact_query):
             score += 0.2
-        elif query in normalized_name:
+            has_qualitative_match = True
+        elif query in normalized_name or (
+            compact_query and compact_query in compact_name
+        ):
             score += 0.12
+            has_qualitative_match = True
 
         if query_soundex and query_soundex == _soundex(compact_name):
             score += 0.18
+            has_qualitative_match = True
 
         score += _APP_SOURCE_PRIORITY.get(str(candidate.get("source")), 0.55) * 0.12
         ranked.append(
@@ -847,6 +867,7 @@ def _rank_app_candidates(query: str, candidates: list[dict[str, Any]]) -> list[d
                 "path": str(candidate["path"]),
                 "source": str(candidate["source"]),
                 "score": round(score, 4),
+                "has_qualitative_match": has_qualitative_match,
             }
         )
 

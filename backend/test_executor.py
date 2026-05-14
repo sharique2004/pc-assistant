@@ -28,10 +28,13 @@ def mock_requests_post():
 
 
 def test_resolve_app_path():
-    # Test known app
+    # Chrome may resolve to either a literal chrome.exe path or to a
+    # shell:AppsFolder\Chrome AUMID URI (Start Menu source).  Both are valid
+    # launchable targets, so accept either.
     chrome_path = executor.resolve_app_path("chrome")
-    assert "chrome.exe" in chrome_path.lower()
-    
+    lowered = chrome_path.lower()
+    assert "chrome.exe" in lowered or "shell:appsfolder\\chrome" in lowered
+
     # Test lookup failure (should raise FileNotFoundError)
     with pytest.raises(FileNotFoundError):
         executor.resolve_app_path("nonexistentapp123")

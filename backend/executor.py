@@ -983,11 +983,9 @@ def _iter_launch_candidates(app_name: str) -> list[dict[str, Any]]:
     if resolved_path:
         add_candidate(_friendly_app_name(resolved_path, app_name), resolved_path, "resolved_path", 0.95)
 
-    # Only accept suggestions that meaningfully resemble the query. Without
-    # this floor, world_model.suggest_apps returns its top-5 by score even
-    # when none of them are actually a match, which has previously caused
-    # "Open WhatsApp" -> "Open ChatGPT" misfires when WhatsApp was not yet
-    # in the apps catalog.
+    # Only accept suggestions that (a) clear a score floor AND (b) have a real
+    # name overlap with the user's query. Without (b), unrelated apps like
+    # AppVShNotify can slip past for "Spotify" purely on raw fuzzy ratio.
     suggestion_floor = float(os.getenv("APP_SUGGEST_SCORE_FLOOR", "0.72"))
     suggestions = world_model.suggest_apps(app_name, limit=5)
     for suggestion in suggestions:
@@ -996,6 +994,12 @@ def _iter_launch_candidates(app_name: str) -> list[dict[str, Any]]:
             continue
         suggestion_score = float(suggestion.get("score", 0.0) or 0.0)
         if suggestion_score < suggestion_floor:
+            continue
+        if not _alias_matches_resolution(
+            app_name,
+            str(suggestion.get("display_name") or ""),
+            suggestion_path,
+        ):
             continue
         add_candidate(
             str(suggestion.get("display_name") or app_name),
