@@ -129,16 +129,18 @@ _MESSAGE_APP_PROFILES: dict[str, dict[str, Any]] = {
         "search_shortcut": "^f",
         "confirm_search_with_enter": True,
         "search_pause_s": 0.2,
-        "post_search_pause_s": 0.35,
+        "post_search_pause_s": 0.65,
         "submit_message": True,
+        "verify_recipient": True,
     },
     "whatsapp desktop": {
         "window_hint": "WhatsApp",
         "search_shortcut": "^f",
         "confirm_search_with_enter": True,
         "search_pause_s": 0.2,
-        "post_search_pause_s": 0.35,
+        "post_search_pause_s": 0.65,
         "submit_message": True,
+        "verify_recipient": True,
     },
 }
 
@@ -492,6 +494,8 @@ def app_send_message(
     if not focus_result.get("success"):
         return focus_result
 
+    window_title = focus_result["data"].get("window_title", app_name)
+
     try:
         search_shortcut = str(profile.get("search_shortcut") or "")
         if search_shortcut:
@@ -504,6 +508,53 @@ def app_send_message(
             send_keys("{ENTER}")
         time.sleep(float(profile.get("post_search_pause_s", 0.3)))
 
+        # ---- Recipient verification gate ------------------------------------
+        # Read the chat header from the focused window's UI tree and compare
+        # it to the intended contact name.  If the header does not look like
+        # the intended contact (or we can't read it at all), STOP - return
+        # requires_confirmation: True with details rather than typing into
+        # whatever chat is open.  This prevents wrong-recipient sends when
+        # WhatsApp search returns nothing or the user has another chat focused.
+        verify_recipient = profile.get("verify_recipient", False)
+        chat_header: str | None = None
+        verification_state = "skipped"
+        if verify_recipient:
+            chat_header = _read_chat_header_text(window_title)
+            verification_state = _classify_recipient_match(chat_header, clean_contact)
+
+            if verification_state != "match":
+                # Escape the search field so WhatsApp is left in a clean state.
+                try:
+                    send_keys("{ESC}")
+                except Exception:  # noqa: BLE001
+                    pass
+                detected = chat_header if chat_header else "(could not read the chat header)"
+                if verification_state == "unreadable":
+                    detail = (
+                        f"I could not confirm that the open chat in {app_name} is {clean_contact}. "
+                        "Confirm to send the message anyway, or cancel and try again."
+                    )
+                else:
+                    detail = (
+                        f"The open chat in {app_name} looks like \"{detected}\", "
+                        f"not {clean_contact}. Confirm only if you really want to send there."
+                    )
+                return {
+                    "success": False,
+                    "message": detail,
+                    "data": {
+                        "app_name": app_name,
+                        "contact_name": clean_contact,
+                        "window_title": window_title,
+                        "detected_chat": detected,
+                        "verification": verification_state,
+                        "message_preview": clean_message,
+                        "requires_recipient_confirmation": True,
+                    },
+                    "requires_confirmation": True,
+                }
+        # ----------------------------------------------------------------------
+
         _paste_text(clean_message)
         if profile.get("submit_message", True):
             time.sleep(0.08)
@@ -511,11 +562,13 @@ def app_send_message(
 
         return {
             "success": True,
-            "message": f"Sent your message to {clean_contact} in {focus_result['data'].get('window_title', app_name)}.",
+            "message": f"Sent your message to {clean_contact} in {window_title}.",
             "data": {
                 "app_name": app_name,
                 "contact_name": clean_contact,
-                "window_title": focus_result["data"].get("window_title"),
+                "window_title": window_title,
+                "detected_chat": chat_header,
+                "verification": verification_state,
                 "message": clean_message,
             },
             "requires_confirmation": False,
@@ -528,10 +581,182 @@ def app_send_message(
             "data": {
                 "app_name": app_name,
                 "contact_name": clean_contact,
+                "window_title": window_title,
+            },
+            "requires_confirmation": False,
+        }
+
+
+def send_open_chat_message(app_name: str, message: str, timeout_s: float = _WINDOW_TIMEOUT_S) -> dict[str, Any]:
+    """
+    Type and send a message body into whatever chat is currently open in a
+    messaging app, without running search.  Used as the /confirm path after
+    the user has approved sending to a chat that didn't match the originally
+    requested contact.
+    """
+    if not _HAS_PYWINAUTO:
+        return _missing_automation_dependency_result()
+
+    profile = _resolve_message_profile(app_name)
+    window_hint = str((profile or {}).get("window_hint") or app_name)
+    focus_result = focus_window(window_hint, timeout_s=timeout_s)
+    if not focus_result.get("success"):
+        return focus_result
+
+    clean_message = " ".join(str(message or "").split()).strip()
+    if not clean_message:
+        return {
+            "success": False,
+            "message": "No message body was supplied to send.",
+            "data": {"app_name": app_name},
+            "requires_confirmation": False,
+        }
+
+    try:
+        _paste_text(clean_message)
+        if (profile or {}).get("submit_message", True):
+            time.sleep(0.08)
+            send_keys("{ENTER}")
+        return {
+            "success": True,
+            "message": f"Sent your message in {focus_result['data'].get('window_title', app_name)}.",
+            "data": {
+                "app_name": app_name,
+                "window_title": focus_result["data"].get("window_title"),
+                "message": clean_message,
+            },
+            "requires_confirmation": False,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Confirmed open-chat send failed")
+        return {
+            "success": False,
+            "message": f"I could not deliver the confirmed message in {app_name}: {exc}",
+            "data": {
+                "app_name": app_name,
                 "window_title": focus_result["data"].get("window_title"),
             },
             "requires_confirmation": False,
         }
+
+
+def _read_chat_header_text(window_title: str, timeout_s: float = 1.6) -> str | None:
+    """
+    Best-effort read of the currently open chat's header text inside a
+    messaging app, by walking the focused window's UIA tree.
+
+    Returns the most likely "this is the contact name" string, or None if
+    pywinauto is unavailable, the window cannot be located, or no plausible
+    header was found.
+
+    Used as a recipient safety check before app_send_message types the body.
+    """
+    if not _HAS_PYWINAUTO or Desktop is None:
+        return None
+
+    ui_window = _find_ui_window(window_title)
+    if ui_window is None:
+        return None
+
+    deadline = time.time() + max(0.4, timeout_s)
+    candidates: list[str] = []
+
+    while time.time() < deadline:
+        candidates = []
+        try:
+            descendants = ui_window.descendants(control_type="Text") or []
+        except Exception:  # noqa: BLE001
+            descendants = []
+
+        for element in descendants:
+            try:
+                text = str(element.window_text() or "").strip()
+            except Exception:  # noqa: BLE001
+                continue
+            if not text or len(text) > 80:
+                continue
+            normalized = _normalize_text(text)
+            if not normalized:
+                continue
+            # Discard noise: app chrome, generic labels, system strings.
+            if normalized in _CHAT_HEADER_NOISE:
+                continue
+            if any(noise in normalized for noise in _CHAT_HEADER_NOISE_SUBSTRINGS):
+                continue
+            candidates.append(text)
+            # First plausible match is almost always the open chat title
+            # because pywinauto traverses the tree top-down.
+            return text
+
+        time.sleep(0.18)
+
+    return candidates[0] if candidates else None
+
+
+def _classify_recipient_match(chat_header: str | None, intended_contact: str) -> str:
+    """
+    Decide whether the chat header looks like the intended recipient.
+
+    Returns one of:
+        "match"      - header tokens overlap meaningfully with intended_contact.
+        "mismatch"   - header was read but does not look like the contact.
+        "unreadable" - header could not be read (None / empty / app chrome).
+    """
+    normalized_intended = _normalize_text(intended_contact)
+    if not normalized_intended:
+        return "unreadable"
+    if not chat_header:
+        return "unreadable"
+
+    normalized_header = _normalize_text(chat_header)
+    if not normalized_header or normalized_header in _CHAT_HEADER_NOISE:
+        return "unreadable"
+
+    if normalized_intended == normalized_header:
+        return "match"
+
+    intended_tokens = {token for token in normalized_intended.split() if len(token) >= 2}
+    header_tokens = {token for token in normalized_header.split() if len(token) >= 2}
+    if intended_tokens and intended_tokens.issubset(header_tokens):
+        return "match"
+    if header_tokens and header_tokens.issubset(intended_tokens):
+        return "match"
+
+    # Compact contains (handles "alex" vs "alex.jones" or "alexj")
+    compact_intended = _compact_text(normalized_intended)
+    compact_header = _compact_text(normalized_header)
+    if compact_intended and compact_header:
+        if compact_intended in compact_header or compact_header in compact_intended:
+            return "match"
+
+    return "mismatch"
+
+
+# Strings that frequently appear as Text elements in WhatsApp / Discord chrome
+# and do not represent a contact name. Anything here is treated as "unreadable".
+_CHAT_HEADER_NOISE: set[str] = {
+    "",
+    "whatsapp",
+    "discord",
+    "chats",
+    "calls",
+    "status",
+    "search",
+    "search or start a new chat",
+    "type a message",
+    "online",
+    "typing",
+    "menu",
+    "settings",
+    "profile",
+    "new chat",
+}
+_CHAT_HEADER_NOISE_SUBSTRINGS: tuple[str, ...] = (
+    "search or start",
+    "type a message",
+    "click here for",
+    "last seen",
+)
 
 
 def _missing_automation_dependency_result() -> dict[str, Any]:

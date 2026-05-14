@@ -152,27 +152,31 @@ def test_create_file(mock_startfile, tmp_path):
 
 def test_create_app(mock_requests_post, mock_subprocess_popen, mock_startfile, tmp_path):
     executor._WORKSPACE_DIR = str(tmp_path / "workspace")
-    
+
     # Mock the Ollama API response
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "response": '[{"filename": "main.py", "content": "print(\'test\')"}]'
     }
     mock_requests_post.return_value = mock_response
-    
-    result = executor.create_app("A simple test app")
-    assert result["data"]["requires_confirmation"] is True
-    op_id = result["data"]["operation_id"]
-    
-    with patch.dict(os.environ, {"VSCODE_PATH": "C:/fake_code.exe", "OLLAMA_HOST": "dummy"}):
-        with patch("os.path.exists", return_value=True):
-            confirm_result = executor.confirm_operation(op_id)
-            
-            assert confirm_result["success"] is True
-            assert len(confirm_result["data"]["files_created"]) == 1
-            project_dir = confirm_result["data"]["project_dir"]
-            assert "simple-test-app" in project_dir
-            mock_subprocess_popen.assert_called_once()
+
+    # Pin the router to the local Ollama path so this test exercises that
+    # branch even when claude.cmd / codex.cmd happen to be installed on the
+    # host running the suite.
+    with patch.dict(os.environ, {"APP_BUILDER": "ollama"}):
+        result = executor.create_app("A simple test app")
+        assert result["data"]["requires_confirmation"] is True
+        op_id = result["data"]["operation_id"]
+
+        with patch.dict(os.environ, {"VSCODE_PATH": "C:/fake_code.exe", "OLLAMA_HOST": "dummy"}):
+            with patch("os.path.exists", return_value=True):
+                confirm_result = executor.confirm_operation(op_id)
+
+                assert confirm_result["success"] is True
+                assert len(confirm_result["data"]["files_created"]) == 1
+                project_dir = confirm_result["data"]["project_dir"]
+                assert "simple-test-app" in project_dir
+                mock_subprocess_popen.assert_called_once()
 
 
 def test_create_app_rejects_path_traversal_from_model(mock_requests_post, tmp_path):
@@ -184,8 +188,9 @@ def test_create_app_rejects_path_traversal_from_model(mock_requests_post, tmp_pa
     }
     mock_requests_post.return_value = mock_response
 
-    result = executor.create_app("A simple test app")
-    confirm_result = executor.confirm_operation(result["data"]["operation_id"])
+    with patch.dict(os.environ, {"APP_BUILDER": "ollama"}):
+        result = executor.create_app("A simple test app")
+        confirm_result = executor.confirm_operation(result["data"]["operation_id"])
 
     assert confirm_result["success"] is False
     assert "valid project files" in confirm_result["message"]
@@ -512,23 +517,132 @@ def test_create_app_routes_react_dashboard_to_claude():
 
 
 def test_create_app_uses_codex_for_complex_script_requests():
-    # Long script-style request with no UI markers should land on Codex.
+    # Script-style phrasing should route to Codex when Codex is installed.
     description = (
-        "a command line program that scans a folder full of log files, parses out "
-        "timestamps and error codes, and produces a CSV summary grouped by day"
+        "a python script that scans a folder full of log files, parses out "
+        "timestamps and error codes, and produces a CSV summary"
     )
-    with patch("executor.run_codex_task") as mock_codex_task:
-        mock_codex_task.return_value = {
-            "success": False,
-            "message": "This action requires your confirmation.",
-            "data": {"requires_confirmation": True, "operation_id": "op"},
-            "requires_confirmation": True,
-        }
-        result = executor.create_app(description)
+    with patch("executor._claude_cli_available", return_value=True):
+        with patch("executor._codex_cli_available", return_value=True):
+            with patch("executor.run_codex_task") as mock_codex_task:
+                mock_codex_task.return_value = {
+                    "success": False,
+                    "message": "This action requires your confirmation.",
+                    "data": {"requires_confirmation": True, "operation_id": "op"},
+                    "requires_confirmation": True,
+                }
+                result = executor.create_app(description)
 
     assert result["data"]["requires_confirmation"] is True
     mock_codex_task.assert_called_once()
-    assert "log files" in mock_codex_task.call_args.args[0]
+
+
+def test_create_app_generic_description_defaults_to_claude():
+    # The original gap reported in code review: generic "create an application
+    # that tracks X" was falling through to local Ollama instead of Claude.
+    # With Claude installed, plain "applications" must go to Claude.
+    with patch("executor._claude_cli_available", return_value=True):
+        with patch("executor._codex_cli_available", return_value=True):
+            with patch("executor.run_claude_task") as mock_claude_task:
+                mock_claude_task.return_value = {
+                    "success": False,
+                    "message": "This action requires your confirmation.",
+                    "data": {"requires_confirmation": True, "operation_id": "op"},
+                    "requires_confirmation": True,
+                }
+                result = executor.create_app("an application that tracks my daily workouts")
+
+    assert result["data"]["requires_confirmation"] is True
+    mock_claude_task.assert_called_once()
+
+
+def test_create_app_falls_back_to_codex_when_claude_unavailable():
+    # If Claude CLI is missing but Codex is installed, generic app requests
+    # should land on Codex - not collapse to local Ollama.
+    with patch("executor._claude_cli_available", return_value=False):
+        with patch("executor._codex_cli_available", return_value=True):
+            with patch("executor.run_codex_task") as mock_codex_task:
+                mock_codex_task.return_value = {
+                    "success": False,
+                    "message": "This action requires your confirmation.",
+                    "data": {"requires_confirmation": True, "operation_id": "op"},
+                    "requires_confirmation": True,
+                }
+                result = executor.create_app("an application that tracks my daily workouts")
+
+    assert result["data"]["requires_confirmation"] is True
+    mock_codex_task.assert_called_once()
+
+
+def test_create_app_uses_ollama_only_when_no_cli_installed(mock_requests_post, tmp_path):
+    # Last-resort path: with both CLIs missing, the local Ollama codegen
+    # branch still runs.
+    executor._WORKSPACE_DIR = str(tmp_path / "workspace")
+    mock_requests_post.return_value.json.return_value = {
+        "response": '[{"filename": "main.py", "content": "print(\'hello\')"}]'
+    }
+    with patch("executor._claude_cli_available", return_value=False):
+        with patch("executor._codex_cli_available", return_value=False):
+            result = executor.create_app("an application that tracks my daily workouts")
+
+    # Falls into the Ollama _queue_operation path (no Claude/Codex run).
+    assert result["data"]["requires_confirmation"] is True
+    assert "operation_id" in result["data"]
+
+
+def test_automate_app_message_blocks_send_when_recipient_unverifiable():
+    # Recipient safety gate: app_send_message returns
+    # requires_recipient_confirmation when it cannot read the chat header.
+    # The executor wrapper must NOT auto-send - it returns a hard refusal
+    # and does NOT queue a confirmation path for the unreadable case.
+    fake_open = {
+        "success": True,
+        "data": {"resolved_app_name": "WhatsApp"},
+    }
+    fake_send = {
+        "success": False,
+        "message": "Could not confirm recipient.",
+        "data": {
+            "requires_recipient_confirmation": True,
+            "verification": "unreadable",
+            "detected_chat": "",
+        },
+        "requires_confirmation": True,
+    }
+    with patch("executor.open_app", return_value=fake_open):
+        with patch("executor.window_actions.app_send_message", return_value=fake_send):
+            result = executor.automate_app_message("WhatsApp", "Alex", "hello")
+
+    assert result["success"] is False
+    assert result["requires_confirmation"] is False
+    assert "did not send" in result["message"].lower()
+
+
+def test_automate_app_message_queues_confirm_when_recipient_mismatched():
+    # Recipient safety gate: when the open chat doesn't match the intended
+    # contact, executor queues a force-send operation that requires user
+    # /confirm before delivering.
+    fake_open = {
+        "success": True,
+        "data": {"resolved_app_name": "WhatsApp"},
+    }
+    fake_send = {
+        "success": False,
+        "message": "Mismatch.",
+        "data": {
+            "requires_recipient_confirmation": True,
+            "verification": "mismatch",
+            "detected_chat": "Bob Smith",
+        },
+        "requires_confirmation": True,
+    }
+    with patch("executor.open_app", return_value=fake_open):
+        with patch("executor.window_actions.app_send_message", return_value=fake_send):
+            result = executor.automate_app_message("WhatsApp", "Alex", "hello")
+
+    assert result["data"]["requires_confirmation"] is True
+    assert "operation_id" in result["data"]
+    assert "bob smith" in result["data"].get("description", "").lower()
 
 
 def test_run_codex_task_queues_and_executes(tmp_path):

@@ -372,67 +372,110 @@ def _extract_claude_task(raw_text: str) -> str | None:
     return None
 
 
-def _should_use_codex_for_app(description: str) -> bool:
-    provider = (
+def _provider_override() -> str:
+    """Return user-pinned provider preference from env, or empty string."""
+    return (
         os.getenv("APP_BUILDER", "")
         or os.getenv("CODEGEN_PROVIDER", "")
         or ""
     ).strip().lower()
-    if provider in {"codex", "codex-cli"}:
+
+
+def _codex_cli_available() -> bool:
+    try:
+        _resolve_codex_executable()
         return True
-    if provider in {"ollama", "local-ollama"}:
-        return False
-    if provider in {"claude", "claude-code"}:
+    except FileNotFoundError:
         return False
 
-    lowered = str(description or "").lower()
-    if "codex" in lowered:
-        return True
-    if any(marker in lowered for marker in _CODEX_COMPLEX_APP_MARKERS):
-        return True
 
-    words = re.findall(r"[a-z0-9]+", lowered)
-    appish = any(token in lowered for token in (" app", " application", " website", " tool", " program"))
-    return appish and len(words) >= 18
+def _claude_cli_available() -> bool:
+    try:
+        _resolve_claude_executable()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+# Phrases that strongly suggest "small focused script / one-shot CLI" work,
+# which Codex tends to handle faster than Claude. Tokens are matched as
+# substrings of " {description} " (with bookend spaces) so we don't false-fire
+# on substrings inside larger words.
+_CODEX_LEAN_MARKERS: tuple[str, ...] = (
+    " script ", " scripts ",
+    " python script", " bash script", " powershell script", " shell script",
+    " one-liner ", " one liner ",
+    " cli ", " cli tool", " command line ", " command-line ",
+    " utility ", " utilities ",
+    " function ",
+    " regex ", " snippet ",
+)
+
+
+def _choose_app_provider(description: str) -> str:
+    """
+    Decide which back-end should generate code for `create_app(description)`.
+
+    Return one of: "claude", "codex", "ollama".
+
+    Rules, in order:
+      1. Explicit env override (APP_BUILDER / CODEGEN_PROVIDER) wins.
+      2. Explicit "use claude ..." / "use codex ..." in the description wins.
+      3. Script-style phrasing routes to Codex when Codex is installed.
+      4. Everything else (any "create / build me an application that ...")
+         routes to Claude when Claude is installed.
+      5. Fall back to the other CLI if the preferred one is missing.
+      6. Local Ollama is the last resort - only when neither CLI is available.
+    """
+    override = _provider_override()
+    if override in {"claude", "claude-code"}:
+        return "claude"
+    if override in {"codex", "codex-cli"}:
+        return "codex"
+    if override in {"ollama", "local-ollama"}:
+        return "ollama"
+
+    claude_available = _claude_cli_available()
+    codex_available = _codex_cli_available()
+    lowered = f" {str(description or '').lower()} "
+
+    # Explicit hand-off mentions in the description.
+    if "claude code" in lowered or re.search(r"\bclaude\b", lowered):
+        if claude_available:
+            return "claude"
+        # Asked for Claude but it's not installed - fall through to next-best.
+    if re.search(r"\bcodex\b", lowered):
+        if codex_available:
+            return "codex"
+        # Asked for Codex but it's not installed - fall through to next-best.
+
+    # Script-leaning phrasing prefers Codex.
+    if any(marker in lowered for marker in _CODEX_LEAN_MARKERS):
+        if codex_available:
+            return "codex"
+        if claude_available:
+            return "claude"
+        return "ollama"
+
+    # Default: Claude handles "applications" / "apps" / "websites" / anything
+    # that requires multi-file reasoning.  When Claude isn't installed, Codex
+    # is the next-best general-purpose option; Ollama is only a fallback when
+    # no real CLI is plumbed in.
+    if claude_available:
+        return "claude"
+    if codex_available:
+        return "codex"
+    return "ollama"
+
+
+def _should_use_codex_for_app(description: str) -> bool:
+    """Backward-compatible wrapper around the unified router."""
+    return _choose_app_provider(description) == "codex"
 
 
 def _should_use_claude_for_app(description: str) -> bool:
-    """
-    Decide whether Claude Code is the right tool for a create_app request.
-
-    Routing intent: Claude tends to win on multi-file projects with UI or
-    architectural reasoning (full-stack apps, websites, frontend work, anything
-    needing thoughtful structure across files).  Codex tends to win on quick
-    single-purpose scripts and CLI utilities.  When neither tool is plumbed in
-    or the description is short and script-like, fall back to local Ollama.
-    """
-    provider = (
-        os.getenv("APP_BUILDER", "")
-        or os.getenv("CODEGEN_PROVIDER", "")
-        or ""
-    ).strip().lower()
-    if provider in {"claude", "claude-code"}:
-        return True
-    if provider in {"codex", "codex-cli", "ollama", "local-ollama"}:
-        return False
-
-    lowered = str(description or "").lower()
-    if any(marker in lowered for marker in ("claude code", "claude-code")) or re.search(r"\bclaude\b", lowered):
-        return True
-
-    # Strong UI / multi-file / full-stack signals -> Claude is a better fit.
-    claude_markers = (
-        " website", " web app", " web application", " frontend", " front end",
-        " backend", " back end", " fullstack", " full stack", " full-stack",
-        " react", " vue", " svelte", " next.js", " nextjs", " tailwind",
-        " dashboard", " ui ", " interface", " mobile app", " ios app",
-        " android app", " flask app", " django app", " api server",
-        " desktop app",
-    )
-    if any(marker in f" {lowered} " for marker in claude_markers):
-        return True
-
-    return False
+    """Backward-compatible wrapper around the unified router."""
+    return _choose_app_provider(description) == "claude"
 
 
 def _resolve_codex_executable() -> str:
@@ -825,8 +868,58 @@ def automate_app_message(app_name: str, contact_name: str, message: str) -> dict
             return open_result
 
         automation_result = window_actions.app_send_message(app_name, contact_name, message)
-        combined_success = bool(open_result.get("success")) and bool(automation_result.get("success"))
         resolved_name = open_result.get("data", {}).get("resolved_app_name") or app_name
+        automation_data = automation_result.get("data") or {}
+
+        # ---- Recipient verification gate ------------------------------------
+        # window_actions.app_send_message refuses to type the body when it
+        # cannot confirm the open chat is the intended contact. Two flavours:
+        #
+        # 1) "mismatch" - search opened the wrong chat. We know which chat is
+        #    actually open; queue a confirmation that, when /confirm hits,
+        #    types the message body into the currently-focused chat (the one
+        #    the user can see and consciously approve).
+        #
+        # 2) "unreadable" - we couldn't read the chat header at all. Refuse
+        #    outright; do NOT register a confirm path. Forcing the user to
+        #    retry avoids sending blind.
+        # ---------------------------------------------------------------------
+        verification = str(automation_data.get("verification") or "")
+        if automation_data.get("requires_recipient_confirmation") and verification == "mismatch":
+            detected_chat = str(automation_data.get("detected_chat") or "")
+            return _queue_operation(
+                fn=_force_send_open_chat_message,
+                kwargs={
+                    "app_name": app_name,
+                    "intended_contact": contact_name,
+                    "detected_chat": detected_chat,
+                    "message": message,
+                    "resolved_name": resolved_name,
+                },
+                description=(
+                    f"WhatsApp opened a chat with \"{detected_chat}\" instead of {contact_name}. "
+                    "Confirm to send anyway, or cancel."
+                ),
+            )
+
+        if automation_data.get("requires_recipient_confirmation") and verification == "unreadable":
+            return {
+                "success": False,
+                "message": (
+                    f"I opened {resolved_name} but could not confirm which chat is selected, "
+                    "so I did not send the message. Open the chat yourself and try again."
+                ),
+                "data": {
+                    "app": resolved_name,
+                    "contact_name": contact_name,
+                    "message_text": message,
+                    "open_result": open_result.get("data", {}),
+                    "automation_result": automation_data,
+                },
+                "requires_confirmation": False,
+            }
+
+        combined_success = bool(open_result.get("success")) and bool(automation_result.get("success"))
         if combined_success:
             user_message = f"Opened {resolved_name} and sent your message to {contact_name}."
         else:
@@ -843,11 +936,59 @@ def automate_app_message(app_name: str, contact_name: str, message: str) -> dict
                 "contact_name": contact_name,
                 "message_text": message,
                 "open_result": open_result.get("data", {}),
-                "automation_result": automation_result.get("data", {}),
+                "automation_result": automation_data,
             },
             "requires_confirmation": False,
         }
     except Exception as exc:
+        return {"success": False, "message": str(exc), "data": {}, "requires_confirmation": False}
+
+
+def _force_send_open_chat_message(
+    app_name: str,
+    intended_contact: str,
+    detected_chat: str,
+    message: str,
+    resolved_name: str,
+) -> dict:
+    """
+    Called by /confirm after the user has been told the open chat is not the
+    intended contact and explicitly approved sending to it anyway.
+
+    Re-focuses the messaging app and types the message body into the chat
+    that is currently selected.  Does NOT re-run the search step - the user
+    is consenting to the chat as it stood at /command time.
+    """
+    try:
+        result = window_actions.send_open_chat_message(app_name, message)
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": (
+                    f"Sent your message in {resolved_name} to the currently open chat "
+                    f"({detected_chat or 'unknown'}), as confirmed."
+                ),
+                "data": {
+                    "app": resolved_name,
+                    "intended_contact": intended_contact,
+                    "detected_chat": detected_chat,
+                    "message_text": message,
+                    "automation_result": result.get("data", {}),
+                },
+                "requires_confirmation": False,
+            }
+        return {
+            "success": False,
+            "message": result.get("message") or f"Could not deliver the message in {resolved_name}.",
+            "data": {
+                "app": resolved_name,
+                "intended_contact": intended_contact,
+                "detected_chat": detected_chat,
+                "automation_result": result.get("data", {}),
+            },
+            "requires_confirmation": False,
+        }
+    except Exception as exc:  # noqa: BLE001
         return {"success": False, "message": str(exc), "data": {}, "requires_confirmation": False}
 
 
@@ -1427,7 +1568,8 @@ def _build_planner_prompt(raw_text: str, history: list[dict[str, Any]], step: in
         '{"type":"tool","tool":"app_search","arguments":{"app_name":"Claude","query":"what is the best speaker"},"reason":"why this tool helps"}\n'
         '{"type":"tool","tool":"app_send_message","arguments":{"app_name":"WhatsApp","contact_name":"Alex","message":"I am on my way"},"reason":"why this tool helps"}\n'
         '{"type":"tool","tool":"type_in_window","arguments":{"window_hint":"current window","text":"compare bose and sony","submit":false},"reason":"why this tool helps"}\n'
-        '{"type":"tool","tool":"codex_task","arguments":{"task":"build a React budget tracker app","project_name":"budget tracker"},"reason":"why this should be delegated to Codex"}\n'
+        '{"type":"tool","tool":"codex_task","arguments":{"task":"write a python script that renames files in a folder","project_name":"rename script"},"reason":"why a focused script belongs on Codex"}\n'
+        '{"type":"tool","tool":"claude_task","arguments":{"task":"build a React budget tracker with charts","project_name":"budget tracker"},"reason":"why a UI app belongs on Claude Code"}\n'
         '{"type":"final","response":"I opened Claude and it is ready.","confidence":0.92}\n'
         '{"type":"clarify","response":"Which file name would you like me to use?","confidence":0.41}\n'
     )
@@ -1843,19 +1985,19 @@ def create_app(description: str) -> dict:
     try:
         clean_description = re.sub(r"\s+", " ", str(description or "").strip())
 
-        # Routing order:
-        #   1. Explicit "use claude / use codex" wins (signaled in description).
-        #   2. UI / multi-file / full-stack work -> Claude Code (better at structure).
-        #   3. Long script-like requests with app/website/program markers -> Codex.
-        #   4. Anything else -> local Ollama codegen.
-        if _should_use_claude_for_app(description):
+        # Unified routing decision - see _choose_app_provider for the rules.
+        # Claude Code is the default for "create an application that ...";
+        # Codex picks up script-style work; Ollama is a last-resort fallback
+        # only when neither CLI is installed.
+        provider = _choose_app_provider(description)
+        if provider == "claude":
             task = (
                 "Create a complete local application for this request: "
                 f"{clean_description}. Include setup and run instructions in a README."
             )
             return run_claude_task(task, project_name=clean_description)
 
-        if _should_use_codex_for_app(description):
+        if provider == "codex":
             task = (
                 "Create a complete local application for this request: "
                 f"{clean_description}. Include setup/run instructions in the project."

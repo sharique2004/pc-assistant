@@ -79,6 +79,10 @@ Rules:
 - Use "general" for conversational requests, multi-step requests, or anything that
   needs follow-up reasoning or local tool planning.
 - Use "general" when the user wants you to remember or recall personal facts.
+- Use "create_app" (NOT "create_file") whenever the user asks you to write a
+  script, utility, CLI tool, function, program, application, website, or any
+  deliverable they will run.  "create_file" is only for plain notes or
+  documents - things like "create a file called notes.txt that says hello".
 
 Parameter shapes:
 - open_app: {"app_name": "Chrome"}
@@ -1018,11 +1022,22 @@ def _extract_fast_create_file_params(transcript: str) -> dict[str, Any] | None:
 
 def _extract_fast_create_app_description(transcript: str) -> str:
     lowered = transcript.lower()
-    if not lowered.startswith(("build ", "create ", "make ", "generate ")):
+    # Verbs that introduce a "build me X" intent. "Write" is here because
+    # phrasings like "write a CLI tool that ..." or "write a python script
+    # that ..." are conceptually create_app requests, not file-write requests.
+    if not lowered.startswith(("build ", "create ", "make ", "generate ", "write ", "code ")):
         return ""
+    # "create a file" / "make a file" remain create_file requests.
     if " file" in lowered:
         return ""
-    if not any(token in lowered for token in (" app", " application", " website", " site", " tool", " program")):
+    # Nouns that signal "a project/deliverable, not chat". Includes "script"
+    # so "write a python script that ..." is treated as create_app and reaches
+    # the Claude / Codex router instead of the general planner.
+    if not any(token in lowered for token in (
+        " app", " application", " website", " site", " tool", " program",
+        " script", " utility", " cli ", " cli tool", " command line",
+        " command-line", " function", " regex",
+    )):
         return ""
     description = _extract_app_description(transcript)
     return description if len(description) >= 6 else ""
