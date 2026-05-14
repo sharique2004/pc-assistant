@@ -666,3 +666,39 @@ def test_run_codex_task_queues_and_executes(tmp_path):
     assert "--ask-for-approval" in command
     assert "never" in command
     mock_startfile.assert_called_once()
+
+
+def test_run_claude_task_passes_prompt_positionally(tmp_path):
+    # Claude Code on Windows refuses --print invocations when the prompt is
+    # piped through stdin via a .cmd shim ("Input must be provided either
+    # through stdin or as a prompt argument when using --print").  The fix
+    # is to append the built prompt as the final positional argument; this
+    # test pins that calling convention.
+    executor._WORKSPACE_DIR = str(tmp_path / "workspace")
+    completed = MagicMock()
+    completed.returncode = 0
+    completed.stdout = "claude output"
+    completed.stderr = ""
+
+    with patch.dict(os.environ, {"VSCODE_PATH": ""}):
+        with patch("executor._resolve_claude_executable", return_value="claude.exe"):
+            with patch("executor.subprocess.run", return_value=completed) as mock_run:
+                with patch("executor.os.startfile") as mock_startfile:
+                    result = executor.run_claude_task("build a workout tracker", project_name="workout tracker")
+                    assert result["data"]["requires_confirmation"] is True
+                    confirm_result = executor.confirm_operation(result["data"]["operation_id"])
+
+    assert confirm_result["success"] is True
+    assert "workout-tracker" in confirm_result["data"]["project_dir"]
+    command = mock_run.call_args.args[0]
+    kwargs = mock_run.call_args.kwargs
+    assert command[0] == "claude.exe"
+    assert "--print" in command
+    # Prompt is the last positional argument and contains the task verbatim.
+    assert "build a workout tracker" in command[-1]
+    # The `--` separator must precede the prompt so that Claude's argv parser
+    # does not consume the prompt as a second value to --add-dir.
+    assert command[-2] == "--"
+    # We deliberately stopped piping the prompt through stdin.
+    assert "input" not in kwargs
+    mock_startfile.assert_called_once()

@@ -499,7 +499,15 @@ def _resolve_codex_executable() -> str:
 
 
 def _resolve_claude_executable() -> str:
-    """Locate the Claude Code CLI (claude or claude.cmd on PATH)."""
+    """
+    Locate the Claude Code CLI.
+
+    Prefers the real `claude.exe` over `claude.cmd`: the .cmd wrapper invokes
+    cmd.exe, which on Windows can swallow stdin and mangle multi-line argv
+    when run from `subprocess.run(...)`. If only the .cmd is found, we try
+    one more step and look inside the npm install layout where the .cmd
+    points at the real exe.
+    """
     configured = os.getenv("CLAUDE_CLI_PATH", "").strip().strip('"')
     if configured:
         configured_path = Path(configured).expanduser()
@@ -509,10 +517,20 @@ def _resolve_claude_executable() -> str:
         if found_configured:
             return found_configured
 
-    for candidate in ("claude.cmd", "claude.exe", "claude"):
+    # Prefer the real exe so we bypass cmd.exe.
+    for candidate in ("claude.exe", "claude.cmd", "claude"):
         found = shutil.which(candidate)
-        if found and not found.lower().endswith(".ps1"):
-            return found
+        if not found or found.lower().endswith(".ps1"):
+            continue
+        if found.lower().endswith(".cmd"):
+            # Resolve the npm shim to the actual claude.exe next to it.
+            exe_path = (
+                Path(found).resolve().parent
+                / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+            )
+            if exe_path.exists():
+                return str(exe_path)
+        return found
 
     raise FileNotFoundError(
         "Could not find the Claude Code CLI on PATH. Install it from "
@@ -1829,6 +1847,12 @@ def run_claude_task(task: str, project_name: str = "", context: str = "") -> dic
             ]
             if model:
                 command.extend(["--model", model])
+            # The CLI parser will otherwise consume the prompt as a second
+            # value for --add-dir (silently dropping it) and refuse with
+            # "Input must be provided either through stdin or as a prompt
+            # argument when using --print".  The `--` separator forces the
+            # prompt to be parsed as a positional.
+            command.append("--")
             command.append(prompt)
 
             completed = subprocess.run(
