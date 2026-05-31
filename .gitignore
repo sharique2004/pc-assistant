@@ -56,6 +56,8 @@ frontend/.vite/
 *.swp
 *.swo
 .cursorrules
+.claude/
+**/.claude/
 
 # =====================================================================
 # Logs & runtime data
@@ -66,6 +68,21 @@ backend/data/
 backend/*.log
 frontend/*.log
 logs/
+
+# =====================================================================
+# Built app + personal / runtime data (NEVER commit)
+# (no inline comments here — git treats them as part of the pattern!)
+#   /Bibi/, dist-app/  -> Electron build output (large)
+#   .bibi-app/, data/*-profile/ -> browser profiles: cookies, logins, history
+#   bibi-journal/, data/ -> activity journal + your personal profile
+# =====================================================================
+/Bibi/
+desktop/dist-app/
+desktop/dist/
+.bibi-app/
+bibi-journal/
+data/*
+!data/bibi_profile.example.json
 
 # =====================================================================
 # Temporary audio files

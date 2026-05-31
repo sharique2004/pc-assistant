@@ -1,0 +1,33 @@
+{
+  "name": "bibi-desktop",
+  "version": "1.0.0",
+  "description": "Bibi — your voice assistant",
+  "main": "main.js",
+  "author": "Bibi",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.bibi.assistant",
+    "productName": "Bibi",
+    "directories": { "output": "dist-app" },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Bibi"
+    },
+    "files": ["main.js", "build/**/*"]
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  }
+}

@@ -116,7 +116,7 @@ _DEFAULT_WHISPER_PROMPT = (
 _CHUNK_DURATION_S = 0.1
 _PRESPEECH_BUFFER_S = 0.4
 _TEMP_FILE_MAX_AGE_S = 3600
-_DEFAULT_FALLBACK_SIGNAL = 0.001
+_DEFAULT_FALLBACK_SIGNAL = 0.0006
 _LEGACY_TMP_DIRS = {"c:/temp/pc-assistant", "c:\\temp\\pc-assistant"}
 _MODEL_CACHE: dict[tuple[str, str], Any] = {}
 _FASTER_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
@@ -235,12 +235,12 @@ def _record_audio() -> str:
 
     requested_sample_rate = _get_env_int("AUDIO_SAMPLE_RATE", 16000)
     max_duration_s = _get_env_float("AUDIO_MAX_DURATION_S", 8.0)
-    silence_threshold = _get_env_float("VAD_SILENCE_THRESHOLD", 0.01)
+    silence_threshold = _get_env_float("VAD_SILENCE_THRESHOLD", 0.003)
     silence_duration_s = _get_env_float("VAD_SILENCE_DURATION_S", 1.5)
-    speech_factor = max(1.5, _get_env_float("VAD_SPEECH_FACTOR", 3.0))
+    speech_factor = max(1.4, _get_env_float("VAD_SPEECH_FACTOR", 1.6))
     fallback_signal = max(0.0005, _get_env_float("VAD_FALLBACK_SIGNAL", _DEFAULT_FALLBACK_SIGNAL))
     noise_calibration_s = max(_CHUNK_DURATION_S, _get_env_float("AUDIO_NOISE_CALIBRATION_S", 0.6))
-    min_speech_duration_s = max(_CHUNK_DURATION_S, _get_env_float("VAD_MIN_SPEECH_DURATION_S", 0.3))
+    min_speech_duration_s = max(_CHUNK_DURATION_S, _get_env_float("VAD_MIN_SPEECH_DURATION_S", 0.2))
     input_device = _get_audio_input_device()
 
     tmp_dir = _get_tmp_dir()
@@ -827,6 +827,30 @@ def _fast_path_intent(transcript: str) -> dict[str, Any] | None:
     cleaned = re.sub(r"\s+", " ", str(transcript or "").strip()).strip()
     if not cleaned:
         return None
+
+    # ── Known web tasks: flight booking, ChatGPT ──
+    # These go straight to web_search so the executor's deep-link detector can
+    # land the user on the right page (Google Flights pre-filled, chat.openai.com)
+    # instead of relying on the LLM classifier to pick the right intent.
+    flight_match = re.search(
+        r"(?:book(?:\s+me)?\s+)?(?:a\s+)?flights?\s+(?:to|for)\s+([a-z][a-z\s.'-]{1,40})",
+        cleaned.lower(),
+    )
+    if flight_match:
+        dest = flight_match.group(1).strip(" .?!").title()
+        return {
+            "intent": "web_search",
+            "parameters": {"query": f"Flights to {dest}"},
+            "confidence": 0.99,
+        }
+
+    if re.search(r"\b(?:open|launch|start)\s+chat\s*gpt\b", cleaned.lower()) \
+            or cleaned.lower().strip() in {"chatgpt", "chat gpt"}:
+        return {
+            "intent": "web_search",
+            "parameters": {"query": "chatgpt"},
+            "confidence": 0.99,
+        }
 
     web_query = _extract_web_search_query(cleaned)
     if web_query:
@@ -1608,8 +1632,8 @@ def _normalize_audio(audio: Any) -> Any:
     if peak <= 0:
         return audio
 
-    target_peak = 12000.0
-    gain = min(8.0, target_peak / peak)
+    target_peak = 15000.0
+    gain = min(12.0, target_peak / peak)
     if gain <= 1.1:
         return audio
 

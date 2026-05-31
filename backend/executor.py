@@ -1563,7 +1563,7 @@ def _build_planner_prompt(raw_text: str, history: list[dict[str, Any]], step: in
         '- codex_task: {"task": "write a python script that renames files", "project_name": "rename script"}\n'
         '- claude_task: {"task": "build a React budget tracker with charts", "project_name": "budget tracker"}\n'
         '- launch_minecraft: {}\n'
-        '- remember_fact: {"fact": "I usually work in C:/Users/Sharique Khatri"}\n\n'
+        '- remember_fact: {"fact": "I usually keep my projects in C:/Projects"}\n\n'
         "Rules:\n"
         "- Use tools when needed to complete the task, not just to talk about it.\n"
         "- You may use multiple tool steps across turns.\n"
@@ -2221,6 +2221,42 @@ def search_pc(query: str) -> dict:
         return {"success": False, "message": str(e), "data": {}, "requires_confirmation": False}
 
 
+def _deep_link_for_query(raw_query: str) -> tuple[str, str] | None:
+    """Detect well-known task intents and return a site-deep-link instead of
+    a generic search URL.  Returned tuple is (url, friendly_message).
+
+    Keeps the deterministic, no-network path the rest of web_search relies on:
+    we only build a URL, never auto-click.  The user lands on the page the
+    task is about (Google Flights pre-filled, ChatGPT, etc.) and finishes the
+    last mile themselves.
+    """
+    lowered = (raw_query or "").lower().strip()
+    if not lowered:
+        return None
+
+    # ── Flights ──
+    flight_match = re.search(
+        r"(?:book(?:\s+me)?\s+)?(?:a\s+)?flights?\s+(?:to|for)\s+([a-z][a-z\s.'-]{1,40})",
+        lowered,
+    )
+    if flight_match:
+        dest = flight_match.group(1).strip(" .?!").title()
+        flights_q = urllib.parse.quote_plus(f"Flights to {dest}")
+        return (
+            f"https://www.google.com/travel/flights?q={flights_q}",
+            f"Opening Google Flights with destination {dest} pre-filled.",
+        )
+
+    # ── ChatGPT ──
+    if re.search(r"\b(?:open|launch|start)\s+chat\s*gpt\b", lowered) or lowered.strip() in {"chatgpt", "chat gpt"}:
+        return (
+            "https://chat.openai.com/",
+            "Opening ChatGPT.",
+        )
+
+    return None
+
+
 def web_search(query: str) -> dict:
     try:
         clean_query = _extract_web_search_query(query) or str(query or "").strip()
@@ -2234,6 +2270,20 @@ def web_search(query: str) -> dict:
                 "requires_confirmation": False,
             }
 
+        # Smart deep-link first — flights, ChatGPT, etc. land on the right page
+        # already filled out, instead of a generic Google results page.
+        deep_link = _deep_link_for_query(query) or _deep_link_for_query(clean_query)
+        if deep_link:
+            url, friendly_message = deep_link
+            _launch_url(url)  # opens in Brave (new tab)
+            _log_activity(f"Opened deep link: {url}")
+            return {
+                "success": True,
+                "message": friendly_message,
+                "data": {"query": clean_query, "url": url, "provider": "deep_link"},
+                "requires_confirmation": False,
+            }
+
         provider = (os.getenv("WEB_SEARCH_PROVIDER", "google").strip().lower() or "google")
         encoded_query = urllib.parse.quote_plus(clean_query)
         if provider == "duckduckgo":
@@ -2243,15 +2293,7 @@ def web_search(query: str) -> dict:
         else:
             url = f"https://www.google.com/search?q={encoded_query}"
 
-        opened = False
-        try:
-            opened = bool(webbrowser.open(url, new=2))
-        except Exception:
-            opened = False
-
-        if not opened:
-            os.startfile(url)
-
+        opened, used = _launch_url(url)  # opens in Brave (new tab)
         _log_activity(f"Opened web search: {url}")
         return {
             "success": True,
@@ -2260,7 +2302,109 @@ def web_search(query: str) -> dict:
                 "query": clean_query,
                 "url": url,
                 "provider": provider,
+                "browser": used,
             },
+            "requires_confirmation": False,
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e), "data": {}, "requires_confirmation": False}
+
+
+def _resolve_brave_path() -> str:
+    """Locate brave.exe.  Honors BRAVE_PATH env, else checks the standard
+    install locations.  Returns '' if Brave isn't found."""
+    configured = os.getenv("BRAVE_PATH", "").strip().strip('"')
+    if configured and Path(configured).exists():
+        return configured
+    candidates = [
+        os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        os.path.expandvars(r"%PROGRAMFILES%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        os.path.expandvars(r"%PROGRAMFILES(X86)%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+    ]
+    for path in candidates:
+        if path and Path(path).exists():
+            return path
+    found = shutil.which("brave")
+    return found or ""
+
+
+def _launch_url(raw: str) -> tuple[bool, str]:
+    """Open a URL in Brave (new tab) if available, else the default browser.
+    Returns (opened, browser_used)."""
+    brave = _resolve_brave_path()
+    if brave:
+        try:
+            # Launching brave.exe with a URL opens it in a NEW TAB of the
+            # running Brave (or starts Brave) — never closes anything.
+            subprocess.Popen([brave, raw], shell=False)
+            return True, "Brave"
+        except Exception:
+            pass
+    try:
+        if webbrowser.open(raw, new=2):  # new=2 → new tab
+            return True, "your browser"
+    except Exception:
+        pass
+    try:
+        os.startfile(raw)  # type: ignore[attr-defined]
+        return True, "your browser"
+    except Exception:
+        return False, "your browser"
+
+
+def open_url(url: str) -> dict:
+    """Open a URL as a NEW TAB in the user's Brave browser (their everyday
+    browser, with their logins/extensions).  Never navigates an existing tab;
+    never closes anything.  Falls back to the default browser if Brave isn't
+    found."""
+    try:
+        raw = str(url or "").strip()
+        if not raw:
+            return {"success": False, "message": "No URL to open.", "data": {}, "requires_confirmation": False}
+        if not raw.startswith(("http://", "https://", "about:", "file://")):
+            raw = "https://" + raw
+
+        opened, used = _launch_url(raw)
+        _log_activity(f"Opened URL in {used}: {raw}")
+        host = re.sub(r"^https?://(www\.)?", "", raw).split("/")[0]
+        return {
+            "success": opened,
+            "message": f"Opened {host} in {used}." if opened else f"Could not open {raw}.",
+            "data": {"url": raw, "browser": used},
+            "requires_confirmation": False,
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e), "data": {}, "requires_confirmation": False}
+
+
+def compose_email(to: str = "", subject: str = "", body: str = "") -> dict:
+    """Open a Gmail compose window PRE-FILLED with recipient, subject and body,
+    in the user's Brave browser.  We never auto-send — the user reviews and
+    hits send — so this is safe and needs no confirmation gate.
+
+    Works 'from where you are': if Gmail is already the active app, this opens
+    a compose window inside that same Gmail session."""
+    try:
+        params = {"view": "cm", "fs": "1", "tf": "1"}
+        to = str(to or "").strip()
+        subject = str(subject or "").strip()
+        body = str(body or "").strip()
+        if to:
+            params["to"] = to
+        if subject:
+            params["su"] = subject
+        if body:
+            params["body"] = body
+        url = "https://mail.google.com/mail/?" + urllib.parse.urlencode(params)
+        opened, used = _launch_url(url)
+        who = to or "your recipient"
+        return {
+            "success": opened,
+            "message": (
+                f"I drafted your email to {who} in Gmail — take a look and hit send."
+                if opened else "I couldn't open the Gmail compose window."
+            ),
+            "data": {"url": url, "to": to, "subject": subject, "body": body, "browser": used},
             "requires_confirmation": False,
         }
     except Exception as e:

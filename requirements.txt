@@ -1,0 +1,38 @@
+# Bibi backend — Python 3.11+ (Windows-first).
+#   python -m venv .venv && .venv\Scripts\activate
+#   pip install -r requirements.txt
+# Bibi's reasoning runs through the Claude Code CLI (installed separately and
+# signed in) — see the README. These are the Python runtime deps.
+
+# --- Web server ---
+flask
+flask-cors
+python-dotenv
+requests
+
+# --- Speech: local STT + TTS ---
+faster-whisper        # local Whisper speech-to-text (CTranslate2; runs on CPU)
+sounddevice           # microphone capture (bundles/needs PortAudio)
+scipy                 # WAV read/write
+numpy
+edge-tts              # natural neural voices (free, needs internet)
+pyttsx3               # offline TTS fallback (Windows SAPI)
+
+# --- Desktop / screen control ---
+pyautogui             # drive the real mouse + keyboard
+pygetwindow           # find / focus OS windows
+pyperclip             # clipboard (paste generated code)
+Pillow                # screenshots (PIL.ImageGrab)
+pywinauto             # Windows UI Automation (more reliable clicks)
+pywin32               # win32 clipboard / keys (Windows)
+psutil                # system stats
+
+# --- Native window shell (legacy option; the shipped shell is Electron, see desktop/) ---
+pywebview
+
+# --- Optional / heavy: uncomment to enable ---
+# playwright          # embedded browser "cockpit" (then run: playwright install)
+# openai-whisper      # alternative STT backend (pulls in torch, ~2 GB)
+
+# --- Dev / test ---
+pytest

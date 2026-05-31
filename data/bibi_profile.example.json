@@ -1,0 +1,14 @@
+{
+  "name": "Your Name",
+  "email": "you@example.com",
+  "sites": {
+    "linkedin": "https://www.linkedin.com/in/your-handle/",
+    "github": "https://github.com/your-handle"
+  },
+  "contacts": {
+    "alex": "alex@example.com"
+  },
+  "notes": {
+    "work_dir": "C:/Projects"
+  }
+}

@@ -22,6 +22,11 @@ export default defineConfig(({ mode }) => {
         '/system-state': { target: apiBase, changeOrigin: true },
         '/health':       { target: apiBase, changeOrigin: true },
         '/confirm':      { target: apiBase, changeOrigin: true },
+        '/wake':         { target: apiBase, changeOrigin: true },
+        '/tts':          { target: apiBase, changeOrigin: true },
+        '/agent':        { target: apiBase, changeOrigin: true },
+        '/browser':      { target: apiBase, changeOrigin: true },
+        '/screen':       { target: apiBase, changeOrigin: true },
       },
     },
 

@@ -21,9 +21,13 @@ import voice_intent
 import executor
 import cloud_router
 import world_model
+import wake_service
+import orchestrator as agent_orchestrator
+import browser_agent
+import screen_control
 from pc_state import get_state
 import tts
-from flask import send_file
+from flask import send_file, Response, send_from_directory
 
 # ---------------------------------------------------------------------------
 # Bootstrap
@@ -40,6 +44,26 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 world_model.initialize()
 world_model.warm_world_model_async(force=False)
+
+
+def _warm_whisper() -> None:
+    """Pre-load the accurate Whisper model in the background so the first
+    push-to-talk command (/listen) is fast, not a ~20s cold start."""
+    try:
+        import numpy as np
+        from scipy.io import wavfile
+        warm_dir = Path(__file__).resolve().parent.parent / "tmp"
+        warm_dir.mkdir(parents=True, exist_ok=True)
+        warm_wav = warm_dir / "warm.wav"
+        wavfile.write(str(warm_wav), 16000, np.zeros(8000, dtype="int16"))
+        voice_intent._transcribe(str(warm_wav))
+        warm_wav.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+import threading as _threading
+_threading.Thread(target=_warm_whisper, daemon=True).start()
 
 # CORS — origins drawn from env so the dev URL (Vite) is never hardcoded.
 _raw_origins = os.getenv(
@@ -374,7 +398,8 @@ def tts_endpoint():
         audio_path = tts.generate_tts_audio(text)
         if not os.path.exists(audio_path):
             raise FileNotFoundError("TTS engine did not output a file.")
-        return send_file(audio_path, mimetype="audio/wav")
+        mimetype = "audio/mpeg" if str(audio_path).lower().endswith(".mp3") else "audio/wav"
+        return send_file(audio_path, mimetype=mimetype)
     except Exception as exc:
         logger.exception("tts generation failed")
         return _error("tts_failed", str(exc), 500)
@@ -412,6 +437,254 @@ def confirm():
         return _error("confirm_failed", str(exc), 500)
 
     return jsonify({"success": True, "result": result}), 200
+
+
+# ---------------------------------------------------------------------------
+# Wake-word listening ("Bibi") — always-on local listener for the web UI.
+#
+# The web UI flips this on/off and polls /wake/status.  All STT + execution
+# happens locally through the same voice_intent + executor pipeline as
+# /command, so the on-device promise holds.
+# ---------------------------------------------------------------------------
+
+@app.route("/wake/start", methods=["POST"])
+def wake_start():
+    try:
+        return jsonify(wake_service.service.start()), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("wake_start failed")
+        return _error("wake_start_failed", str(exc), 500)
+
+
+@app.route("/wake/stop", methods=["POST"])
+def wake_stop():
+    try:
+        return jsonify(wake_service.service.stop()), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("wake_stop failed")
+        return _error("wake_stop_failed", str(exc), 500)
+
+
+@app.route("/wake/status", methods=["GET"])
+def wake_status():
+    try:
+        return jsonify(wake_service.service.status()), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("wake_status failed")
+        return _error("wake_status_failed", str(exc), 500)
+
+
+@app.route("/wake/simulate", methods=["POST"])
+def wake_simulate():
+    """Dev-only: inject a heard transcript to exercise the UI without a mic.
+    Disabled unless WAKE_DEBUG is truthy in the environment."""
+    if os.getenv("WAKE_DEBUG", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return _error("disabled", "Set WAKE_DEBUG=1 to enable wake simulation.", 403)
+    body = request.get_json(silent=True) or {}
+    transcript = str(body.get("transcript") or body.get("text") or "").strip()
+    if not transcript:
+        return _error("missing_field", "'transcript' is required.", 400)
+    try:
+        return jsonify(wake_service.service.simulate(transcript)), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("wake_simulate failed")
+        return _error("wake_simulate_failed", str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Agent orchestrator — one utterance → question answered, or tasks run live.
+# The web UI polls /agent/status for the whole picture (workflow + wake state).
+# ---------------------------------------------------------------------------
+
+@app.route("/agent/run", methods=["POST"])
+def agent_run():
+    body = request.get_json(silent=True) or {}
+    text = str(body.get("text") or body.get("transcript") or "").strip()
+    if not text:
+        return _error("missing_field", "'text' is required.", 400)
+    try:
+        return jsonify(agent_orchestrator.orchestrator.run_utterance(text, source="text")), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("agent_run failed")
+        return _error("agent_run_failed", str(exc), 500)
+
+
+@app.route("/agent/voice", methods=["POST"])
+def agent_voice():
+    uploaded = request.files.get("audio")
+    if uploaded is None or not uploaded.filename:
+        return _error("missing_field", "multipart 'audio' file is required.", 400)
+    try:
+        audio_path = _save_uploaded_audio(uploaded.filename, uploaded.read())
+        try:
+            # Transcription ONLY (local Whisper) — Bibi's Claude brain does the
+            # reasoning, so we never depend on Ollama for the voice path.
+            transcript = voice_intent._transcribe(audio_path).strip()
+        finally:
+            try:
+                Path(audio_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not transcript:
+            return jsonify({"transcript": "", "status": agent_orchestrator.orchestrator.status()}), 200
+        agent_orchestrator.orchestrator.run_utterance(transcript, source="voice")
+        return jsonify({"transcript": transcript, "status": agent_orchestrator.orchestrator.status()}), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("agent_voice failed")
+        return _error("agent_voice_failed", str(exc), 500)
+
+
+@app.route("/listen", methods=["POST"])
+def listen():
+    """Push-to-talk voice: pause the wake listener, record ONE command from the
+    mic locally (VAD stops on silence), resume the listener, transcribe with the
+    accurate local model, and run it. This owns the mic for the duration, so it
+    never fights the always-on wake listener — far more reliable than the wake
+    word for capturing a full spoken command."""
+    was_listening = False
+    try:
+        was_listening = bool(wake_service.service.status().get("listening"))
+    except Exception:  # noqa: BLE001
+        pass
+    if was_listening:
+        try:
+            wake_service.service.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.25)  # let the wake mic stream fully release
+    agent_orchestrator.orchestrator.signal_wake("Listening… speak now")
+    transcript = ""
+    try:
+        wav_path = voice_intent._record_audio()
+        transcript = (voice_intent._transcribe(wav_path) or "").strip()
+        try:
+            Path(wav_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    except Exception:  # noqa: BLE001
+        logger.exception("listen failed")
+    finally:
+        if was_listening:
+            try:
+                wake_service.service.start()
+            except Exception:  # noqa: BLE001
+                pass
+    if not transcript:
+        agent_orchestrator.orchestrator.speak("I didn't catch that. Try again.")
+        return jsonify({"transcript": "", "status": agent_orchestrator.orchestrator.status()}), 200
+    agent_orchestrator.orchestrator.signal_processing(f"Got it — working on “{transcript}”…")
+    agent_orchestrator.orchestrator.run_utterance(transcript, source="voice")
+    return jsonify({"transcript": transcript, "status": agent_orchestrator.orchestrator.status()}), 200
+
+
+@app.route("/agent/status", methods=["GET"])
+def agent_status():
+    try:
+        return jsonify(agent_orchestrator.orchestrator.status()), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("agent_status failed")
+        return _error("agent_status_failed", str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Real browser cockpit — live screen for the side panel, open-only, drivable.
+# ---------------------------------------------------------------------------
+
+@app.route("/browser/open", methods=["POST"])
+def browser_open():
+    body = request.get_json(silent=True) or {}
+    url = str(body.get("url") or "").strip()
+    if not url:
+        return _error("missing_field", "'url' is required.", 400)
+    try:
+        return jsonify(browser_agent.cockpit.open_url(url, new_tab=bool(body.get("new_tab", True)))), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("browser_open failed")
+        return _error("browser_open_failed", str(exc), 500)
+
+
+@app.route("/browser/act", methods=["POST"])
+def browser_act():
+    body = request.get_json(silent=True) or {}
+    action = str(body.get("action") or "").strip()
+    if not action:
+        return _error("missing_field", "'action' is required.", 400)
+    kwargs = {k: v for k, v in body.items() if k != "action"}
+    try:
+        return jsonify(browser_agent.cockpit.act(action, **kwargs)), 200
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("browser_act failed")
+        return _error("browser_act_failed", str(exc), 500)
+
+
+@app.route("/browser/status", methods=["GET"])
+def browser_status():
+    try:
+        return jsonify(browser_agent.cockpit.status()), 200
+    except Exception as exc:  # noqa: BLE001
+        return _error("browser_status_failed", str(exc), 500)
+
+
+@app.route("/browser/screenshot", methods=["GET"])
+def browser_screenshot():
+    png = browser_agent.cockpit.get_screenshot()
+    if not png:
+        return Response(status=204)
+    return Response(png, mimetype="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.route("/screen/shot", methods=["GET"])
+def screen_shot():
+    """Latest capture of what Bibi looked at while acting on your screen."""
+    png = screen_control.latest_shot()
+    if not png:
+        return Response(status=204)
+    return Response(png, mimetype="image/png", headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------------------
+# Serve the built web UI (frontend/dist) so the whole app is ONE origin on
+# :5000 — this is what the native desktop shell (bibi_desktop.py) loads. In
+# dev you can still run the Vite server on :5173 and proxy to here instead.
+# These two routes are declared last so every explicit API route wins first.
+# ---------------------------------------------------------------------------
+_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
+@app.route("/")
+def _ui_index():
+    if (_DIST_DIR / "index.html").exists():
+        return send_from_directory(str(_DIST_DIR), "index.html")
+    return jsonify({
+        "status": "ok",
+        "service": "pc-assistant-backend",
+        "ui": "not built yet — run `npm run build` in frontend/",
+    }), 200
+
+
+@app.route("/<path:filename>", methods=["GET"])
+def _ui_static(filename: str):
+    try:
+        if (_DIST_DIR / filename).is_file():
+            return send_from_directory(str(_DIST_DIR), filename)
+    except (OSError, ValueError):
+        pass
+    # SPA fallback for client-side routes (paths with no file extension).
+    if "." not in Path(filename).name and (_DIST_DIR / "index.html").exists():
+        return send_from_directory(str(_DIST_DIR), "index.html")
+    return _error("not_found", f"No such resource: {filename}", 404)
+
+
+@app.after_request
+def _no_cache_ui(resp):
+    """Never let the browser cache the UI shell — always load the latest build.
+    (Without this, Brave served a stale bundle and the app looked frozen.)"""
+    ctype = resp.headers.get("Content-Type", "")
+    if "text/html" in ctype or "javascript" in ctype or "text/css" in ctype:
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+    return resp
 
 
 # ---------------------------------------------------------------------------
