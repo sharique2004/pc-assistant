@@ -23,9 +23,9 @@
 
 ## 🎬 See it in action
 
-<video src="https://github.com/sharique2004/pc-assistant/raw/main/docs/bibi-demo.mp4" poster="https://github.com/sharique2004/pc-assistant/raw/main/docs/bibi-poster.jpg" controls width="100%"></video>
+[![Watch the Bibi demo — 40 seconds](docs/bibi-poster.jpg)](docs/bibi-demo.mp4)
 
-> ▶️ **[Watch the 40‑second demo](docs/bibi-demo.mp4)** (if the player above doesn't load) — Bibi running a real Windows desktop, by voice.
+> ▶️ **[Watch the 40‑second demo →](docs/bibi-demo.mp4)** Bibi running a real Windows desktop, by voice. *(Click the thumbnail to play.)*
 
 A session looks like this:
 
