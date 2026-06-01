@@ -23,14 +23,12 @@
 
 ## 🎬 See it in action
 
-<!-- ▶️ ADD YOUR DEMO VIDEO / GIF HERE.
-     Easiest: open this README on GitHub.com → Edit → drag-and-drop your .mp4 right here
-     (GitHub hosts it for you). Or drop a docs/demo.gif and uncomment the line below. -->
+<video src="https://github.com/sharique2004/pc-assistant/raw/main/docs/bibi-demo.mp4" poster="https://github.com/sharique2004/pc-assistant/raw/main/docs/bibi-poster.jpg" controls width="100%"></video>
 
-<!-- ![Bibi demo](docs/demo.gif) -->
+> ▶️ **[Watch the 40‑second demo](docs/bibi-demo.mp4)** (if the player above doesn't load) — Bibi running a real Windows desktop, by voice.
 
-> 🚧 **Demo video coming soon.** Until then, here's what a session looks like:
->
+A session looks like this:
+
 > 🗣️ *"Bibi… open YouTube and play the first video."* → opens YouTube, searches, clicks the result.
 > 🗣️ *"Search Amazon for noise-cancelling headphones."* → goes straight to Amazon's results.
 > 🗣️ *"How is glass made?"* → answers out loud, like ChatGPT.
