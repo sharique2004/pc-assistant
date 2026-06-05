@@ -26,12 +26,18 @@ import subprocess
 import time
 from pathlib import Path
 
+import perf
+
 logger = logging.getLogger(__name__)
 
 _TMP = Path(os.getenv("AUDIO_TMP_DIR", str(Path(__file__).resolve().parent.parent / "tmp")))
 _VISION_MODEL = os.getenv("BIBI_VISION_MODEL", "sonnet").strip() or "sonnet"
 _VISION_TIMEOUT = float(os.getenv("BIBI_VISION_TIMEOUT_S", "90"))
-_VISION_MAX_W = int(os.getenv("BIBI_VISION_MAX_W", "1366"))  # downscale → faster vision
+_VISION_MAX_W = int(os.getenv("BIBI_VISION_MAX_W", "1280"))  # downscale → faster vision
+_VISION_JPEG_Q = int(os.getenv("BIBI_VISION_JPEG_Q", "72"))  # JPEG quality for the vision copy
+# Cursor glide time per click. The old hard-coded 0.5s was pure cosmetic delay
+# on every single click; 0.15s still moves visibly but feels far snappier.
+_MOVE_DURATION = float(os.getenv("BIBI_MOVE_DURATION_S", "0.15"))
 
 _last_shot_path = _TMP / "bibi_screen.png"
 
@@ -62,17 +68,19 @@ def latest_shot() -> bytes | None:
 
 # ── vision: find a target on screen ──────────────────────────────────────
 def _downscaled(image_path: Path) -> Path:
-    """Return a width-limited copy of the screenshot so vision is fast.
-    Coordinates stay valid because we work in 0-1 fractions."""
+    """Return a width-limited JPEG copy of the screenshot so vision is fast.
+    A full-res PNG screenshot is several MB; a downscaled JPEG is ~100-300 KB,
+    which the vision model reads and processes much faster. Coordinates stay
+    valid because we always work in 0-1 fractions."""
     try:
         from PIL import Image
         img = Image.open(image_path)
         if img.width > _VISION_MAX_W:
             ratio = _VISION_MAX_W / img.width
             img = img.resize((_VISION_MAX_W, int(img.height * ratio)))
-            out = image_path.parent / "bibi_vision.png"
-            img.save(out)
-            return out
+        out = image_path.parent / "bibi_vision.jpg"
+        img.convert("RGB").save(out, "JPEG", quality=_VISION_JPEG_Q, optimize=True)
+        return out
     except Exception:
         pass
     return image_path
@@ -90,8 +98,9 @@ def _run_vision(prompt: str, image_path: Path) -> str:
     cmd = [exe, "--print", "--system-prompt", sysmsg,
            "--add-dir", str(image_path.parent), "--model", _VISION_MODEL, "--",
            f"{prompt}\n\nScreenshot file: {image_path}"]
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=_VISION_TIMEOUT,
-                         cwd=str(image_path.parent))
+    with perf.timer("vision.claude"):
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=_VISION_TIMEOUT,
+                             cwd=str(image_path.parent))
     return (out.stdout or "").strip()
 
 
@@ -168,7 +177,7 @@ def click_xy(fx: float, fy: float, double: bool = False, right: bool = False) ->
     sw, sh = pg.size()
     x = max(1, min(sw - 1, int(float(fx) * sw)))
     y = max(1, min(sh - 1, int(float(fy) * sh)))
-    pg.moveTo(x, y, duration=0.5)
+    pg.moveTo(x, y, duration=_MOVE_DURATION)
     time.sleep(0.08)
     if right:
         pg.click(button="right")

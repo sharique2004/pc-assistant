@@ -284,10 +284,20 @@ _APP_ALIAS_PATHS: dict[str, list[str]] = {
     ],
 }
 
+_ACTIVITY_LOG_MAX_BYTES = 256 * 1024  # bound the file so long sessions never bloat it
+
 def _log_activity(message: str):
     log_path = Path("activity.log")
     timestamp = datetime.now().isoformat()
     try:
+        # Keep the log bounded — trim to the recent tail when it grows past the
+        # cap, so a long session can't balloon it on disk.
+        try:
+            if log_path.exists() and log_path.stat().st_size > _ACTIVITY_LOG_MAX_BYTES:
+                tail = log_path.read_bytes()[-(_ACTIVITY_LOG_MAX_BYTES // 2):]
+                log_path.write_bytes(tail)
+        except Exception:
+            pass
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] {message}\n")
     except Exception:

@@ -27,7 +27,10 @@ import screen_control as sc
 
 logger = logging.getLogger(__name__)
 
-_MAX_STEPS = int(os.getenv("BIBI_SCREEN_MAX_STEPS", "8"))
+_MAX_STEPS = int(os.getenv("BIBI_SCREEN_MAX_STEPS", "5"))
+# UI settle pause between observe→act steps. 0.9s × every step added up; 0.5s
+# is still enough for most pages to repaint.
+_STEP_SETTLE_S = float(os.getenv("BIBI_STEP_SETTLE_S", "0.5"))
 # Goals that need CONTENT GENERATION (solve/write code, answer) — the blind
 # click loop is useless for these; we read → generate → paste instead.
 _GENERATIVE_RE = re.compile(
@@ -227,7 +230,7 @@ def run_goal(goal: str, on_step: Callable[[str, dict], None] | None = None,
         except Exception as exc:  # noqa: BLE001
             logger.debug("screen action '%s' failed: %s", action, exc)
             history.append(f"step {i+1}: {action} failed")
-        time.sleep(0.9)  # let the UI settle before the next observation
+        time.sleep(_STEP_SETTLE_S)  # let the UI settle before the next observation
 
     sc.capture()  # refresh panel preview
     final_action = str(last.get("action", "")).strip().lower()

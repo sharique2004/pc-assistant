@@ -13,10 +13,25 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
+import perf
+
 logger = logging.getLogger(__name__)
+
+# Reuse a single event loop (guarded by a lock) instead of spinning up and
+# tearing down a fresh one via asyncio.run() on every single utterance.
+_EDGE_LOOP: asyncio.AbstractEventLoop | None = None
+_EDGE_LOCK = threading.Lock()
+
+
+def _edge_loop() -> asyncio.AbstractEventLoop:
+    global _EDGE_LOOP
+    if _EDGE_LOOP is None or _EDGE_LOOP.is_closed():
+        _EDGE_LOOP = asyncio.new_event_loop()
+    return _EDGE_LOOP
 
 try:
     import edge_tts  # neural, natural voices
@@ -33,7 +48,8 @@ except ImportError:
     _HAS_PYTTSX3 = False
 
 _TMP_DIR = Path(__file__).resolve().parent.parent / "tmp"
-_TTS_FILE_MAX_AGE_S = 1800
+# Was 1800s (30 min) — kept far too many stale clips around in a session.
+_TTS_FILE_MAX_AGE_S = int(os.getenv("BIBI_TTS_FILE_MAX_AGE_S", "180"))
 
 # Default neural voice (warm, natural). Override with BIBI_TTS_VOICE, e.g.
 # en-US-JennyNeural, en-US-AriaNeural, en-US-EmmaNeural.
@@ -87,7 +103,8 @@ def generate_tts_audio(text: str) -> str:
     if _HAS_EDGE:
         mp3_path = _TMP_DIR / f"tts_{stamp}.mp3"
         try:
-            _generate_with_edge(cleaned_text, mp3_path)
+            with perf.timer("tts.generate"):
+                _generate_with_edge(cleaned_text, mp3_path)
             if mp3_path.exists() and mp3_path.stat().st_size > 0:
                 return str(mp3_path)
         except Exception as exc:  # noqa: BLE001
@@ -123,7 +140,8 @@ def _generate_with_edge(text: str, output_path: Path) -> None:
         comm = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
         await comm.save(str(output_path))
 
-    asyncio.run(_run())
+    with _EDGE_LOCK:
+        _edge_loop().run_until_complete(_run())
 
 
 def _generate_with_pyttsx3(text: str, output_path: Path) -> None:
